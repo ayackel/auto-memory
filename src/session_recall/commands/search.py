@@ -90,7 +90,13 @@ def run(args) -> int:
         for r in results:
             r.pop("provider", None)
 
-    args._capture = {"sessions": [r.get("session_id_full") for r in results if r.get("session_id_full")]}
+    args._capture = {
+        "sessions": [
+            r.get("session_id_full") or r.get("session_id")
+            for r in results
+            if (r.get("session_id_full") or r.get("session_id"))
+        ]
+    }
     data = {
         "query": raw_query,
         "repo": scope,

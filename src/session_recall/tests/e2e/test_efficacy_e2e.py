@@ -17,6 +17,10 @@ def _seed_store(path):
         " turn_index INTEGER, user_message TEXT, assistant_response TEXT, timestamp TEXT);"
         "CREATE TABLE session_files(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,"
         " file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT);"
+        "CREATE TABLE checkpoints(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,"
+        " checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT);"
+        "CREATE TABLE session_refs(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,"
+        " ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT);"
     )
     c.execute("INSERT INTO sessions VALUES('sess-1','/x','acme/x','main','s','2099-01-01T00:00:00Z','2099-01-01T00:00:00Z','local')")
     c.execute("INSERT INTO turns(session_id,turn_index,assistant_response) VALUES('sess-1',0,'a')")
@@ -59,7 +63,33 @@ def test_efficacy_command_runs_e2e(tmp_path):
     store = str(tmp_path / "store.db")
     eff = str(tmp_path / "eff.db")
     _seed_store(store)
-    r = _cli(store, eff, "efficacy", "--days", "3650", "--json")
-    assert r.returncode == 0, r.stderr
-    out = json.loads(r.stdout)
-    assert out["status"] in {"ok", "insufficient_data"}
+    first = _cli(store, eff, "files", "--repo", "all", "--json")
+    assert first.returncode == 0, first.stderr
+
+    c = sqlite3.connect(store)
+    c.execute(
+        "INSERT INTO turns(session_id,turn_index,assistant_response) "
+        "VALUES('sess-1',1,'used surfaced file')"
+    )
+    c.execute(
+        "INSERT INTO session_files(session_id,file_path,turn_index,first_seen_at) "
+        "VALUES('sess-1','/x/used.py',1,'2099-01-01T00:01:00Z')"
+    )
+    c.commit()
+    c.close()
+
+    second = _cli(store, eff, "files", "--repo", "all", "--json")
+    assert second.returncode == 0, second.stderr
+
+    report = _cli(store, eff, "efficacy", "--days", "3650", "--json")
+    assert report.returncode == 0, report.stderr
+    out = json.loads(report.stdout)
+
+    assert out["status"] == "ok"
+    assert out["file_recall"]["surfaces"] == 1
+    assert out["file_recall"]["hits"] == 1
+    assert out["file_recall"]["rate"] == 1.0
+    assert out["blended"]["surfaces"] == 1
+    assert out["blended"]["hits"] == 1
+    assert out["blended"]["rate"] == 1.0
+    assert out["capture_health"]["runs"] >= 2

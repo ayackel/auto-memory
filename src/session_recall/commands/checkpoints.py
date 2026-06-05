@@ -40,7 +40,13 @@ def run(args) -> int:
         for r in checkpoints:
             r.pop("provider", None)
 
-    args._capture = {"sessions": [c.get("session_id") for c in checkpoints if c.get("session_id")]}
+    args._capture = {
+        "sessions": [
+            c.get("session_id_full") or c.get("session_id")
+            for c in checkpoints
+            if (c.get("session_id_full") or c.get("session_id"))
+        ]
+    }
     output(
         {"repo": repo or "all", "count": len(checkpoints), "checkpoints": checkpoints},
         json_mode=getattr(args, "json", False),
