@@ -148,15 +148,63 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column_ddl: str
                 raise
 
 
-def prune(conn: sqlite3.Connection, retention_days: int, now: str | None = None) -> int:
-    """Delete rows older than retention_days (by row timestamp) and VACUUM. Returns rows deleted."""
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _parse_now(now: str | None) -> datetime:
+    if not now:
+        return datetime.now(timezone.utc)
+    raw = now
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _cutoff(retention_days: int, now: str | None = None) -> str:
+    cutoff_dt = _parse_now(now) - timedelta(days=retention_days)
+    return cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def prune_efficacy(conn: sqlite3.Connection, retention_days: int, now: str | None = None) -> int:
+    """Prune efficacy tables with coherent surfaced/touched semantics."""
+    cutoff = _cutoff(retention_days, now=now)
     deleted = 0
     deleted += conn.execute("DELETE FROM surfaced WHERE first_ts < ?", (cutoff,)).rowcount
-    deleted += conn.execute("DELETE FROM touched WHERE ts < ?", (cutoff,)).rowcount
-    deleted += conn.execute("DELETE FROM telemetry WHERE ts < ?", (cutoff,)).rowcount
+    deleted += conn.execute(
+        "DELETE FROM touched "
+        "WHERE ts < ? "
+        "OR NOT EXISTS ("
+        "SELECT 1 FROM surfaced s "
+        "WHERE s.session_id=touched.session_id AND s.key=touched.key"
+        ")",
+        (cutoff,),
+    ).rowcount
     deleted += conn.execute("DELETE FROM capture_stat WHERE ts < ?", (cutoff,)).rowcount
     conn.commit()
+    return deleted
+
+
+def prune_telemetry(conn: sqlite3.Connection, retention_days: int, now: str | None = None) -> int:
+    """Prune telemetry rows independently from efficacy retention policy."""
+    cutoff = _cutoff(retention_days, now=now)
+    deleted = conn.execute("DELETE FROM telemetry WHERE ts < ?", (cutoff,)).rowcount
+    conn.commit()
+    return deleted
+
+
+def vacuum(conn: sqlite3.Connection) -> None:
     conn.execute("VACUUM")
+
+
+def prune(
+    conn: sqlite3.Connection,
+    retention_days: int,
+    now: str | None = None,
+    telemetry_retention_days: int | None = None,
+) -> int:
+    """Backward-compatible prune for both efficacy and telemetry retention windows."""
+    telemetry_days = retention_days if telemetry_retention_days is None else telemetry_retention_days
+    deleted = prune_efficacy(conn, retention_days, now=now)
+    deleted += prune_telemetry(conn, telemetry_days, now=now)
+    vacuum(conn)
     return deleted

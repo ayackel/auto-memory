@@ -36,11 +36,49 @@ def test_prune_deletes_old_rows(tmp_path):
     conn = efficacy.init(str(tmp_path / "eff.db"))
     conn.execute("INSERT INTO surfaced VALUES('old','k1','file','files','2020-01-01T00:00:00.000000Z',1)")
     conn.execute("INSERT INTO surfaced VALUES('new','k2','file','files',?,1)", (efficacy.now_iso(),))
+    conn.execute("INSERT INTO telemetry(session_id,ts,cmd) VALUES('old', '2020-01-01T00:00:00.000000Z', 'list')")
     conn.commit()
-    deleted = efficacy.prune(conn, retention_days=90)
+    deleted = efficacy.prune(conn, retention_days=90, now="2020-04-01T00:00:00.000000Z")
     keys = {r[0] for r in conn.execute("SELECT key FROM surfaced").fetchall()}
     assert keys == {"k2"}
     assert deleted >= 1
+    conn.close()
+
+
+def test_prune_now_is_deterministic_and_coherent(tmp_path):
+    conn = efficacy.init(str(tmp_path / "eff.db"))
+    conn.execute(
+        "INSERT INTO surfaced VALUES('s','old','file','files','2026-01-01T00:00:00.000000Z',1)"
+    )
+    conn.execute(
+        "INSERT INTO surfaced VALUES('s','new','file','files','2026-03-05T00:00:00.000000Z',2)"
+    )
+    conn.execute("INSERT INTO touched VALUES('s','old','2026-03-10T00:00:00.000000Z',3)")
+    conn.execute("INSERT INTO touched VALUES('s','new','2026-03-10T00:00:00.000000Z',3)")
+    conn.commit()
+
+    deleted = efficacy.prune_efficacy(conn, retention_days=30, now="2026-03-15T00:00:00.000000Z")
+    remaining_keys = {r[0] for r in conn.execute("SELECT key FROM surfaced").fetchall()}
+    remaining_touched = {r[0] for r in conn.execute("SELECT key FROM touched").fetchall()}
+
+    assert deleted == 2
+    assert remaining_keys == {"new"}
+    assert remaining_touched == {"new"}
+    conn.close()
+
+
+def test_prune_efficacy_does_not_prune_telemetry(tmp_path):
+    conn = efficacy.init(str(tmp_path / "eff.db"))
+    conn.execute("INSERT INTO telemetry(session_id,ts,cmd) VALUES('s','2020-01-01T00:00:00.000000Z','list')")
+    conn.execute("INSERT INTO surfaced VALUES('s','k','file','files','2020-01-01T00:00:00.000000Z',1)")
+    conn.commit()
+
+    efficacy.prune_efficacy(conn, retention_days=30, now="2020-03-01T00:00:00.000000Z")
+    telemetry_count = conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0]
+    surfaced_count = conn.execute("SELECT COUNT(*) FROM surfaced").fetchone()[0]
+
+    assert telemetry_count == 1
+    assert surfaced_count == 0
     conn.close()
 
 

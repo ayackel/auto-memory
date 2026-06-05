@@ -161,6 +161,11 @@ def main() -> None:
 
     p_prune = sub.add_parser("prune", help="Delete efficacy data older than retention window")
     p_prune.add_argument("--json", action="store_true")
+    p_prune.add_argument(
+        "--now",
+        default=None,
+        help="UTC anchor time for deterministic pruning (ISO-8601, tests/debug only).",
+    )
 
     p_stats = sub.add_parser("stats", help="Telemetry usage summary")
     p_stats.add_argument("--json", action="store_true")

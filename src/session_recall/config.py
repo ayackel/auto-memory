@@ -42,7 +42,15 @@ EFFICACY_DB_PATH = os.environ.get(
     str(Path.home() / ".copilot" / "scripts" / "session-recall-efficacy.db"),
 )
 
-RETENTION_DAYS = int(os.environ.get("SESSION_RECALL_RETENTION_DAYS", "90"))
+_RETENTION_DAYS_DEFAULT = os.environ.get("SESSION_RECALL_RETENTION_DAYS", "90")
+EFFICACY_RETENTION_DAYS = int(
+    os.environ.get("SESSION_RECALL_EFFICACY_RETENTION_DAYS", _RETENTION_DAYS_DEFAULT)
+)
+TELEMETRY_RETENTION_DAYS = int(
+    os.environ.get("SESSION_RECALL_TELEMETRY_RETENTION_DAYS", _RETENTION_DAYS_DEFAULT)
+)
+# Backward compatibility for existing callers and environments.
+RETENTION_DAYS = EFFICACY_RETENTION_DAYS
 
 CAPTURE_BUDGET_MS = int(os.environ.get("SESSION_RECALL_CAPTURE_BUDGET_MS", "150"))
 
