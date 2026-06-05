@@ -1,49 +1,49 @@
 """Tests for health/dim_disclosure.py — three-state tier, transitions, sample gates."""
-import json
 from datetime import datetime, timedelta, timezone
 from session_recall.health import dim_disclosure
 
 
-def _write_entries(tmp_path, entries, monkeypatch):
-    p = tmp_path / "stats.json"
-    p.write_text(json.dumps({"entries": entries}))
-    monkeypatch.setattr(dim_disclosure, "TELEMETRY_PATH", str(p))
+def _mock_entries(entries, monkeypatch):
+    def _load_entries(limit=500):
+        return entries[-limit:]
+
+    monkeypatch.setattr(dim_disclosure.telemetry, "load_entries", _load_entries)
 
 
 def _ts(offset_min=0):
     return (datetime.now(timezone.utc) - timedelta(minutes=offset_min)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def test_all_legacy_entries_returns_calibrating(tmp_path, monkeypatch):
+def test_all_legacy_entries_returns_calibrating(monkeypatch):
     entries = [{"cmd": "list", "ts": _ts(i)} for i in range(50)]
-    _write_entries(tmp_path, entries, monkeypatch)
+    _mock_entries(entries, monkeypatch)
     r = dim_disclosure.check()
     assert r["zone"] == "CALIBRATING"
     assert r["score"] is None
     assert r["unknown_entries"] == 50
 
 
-def test_meta_entries_excluded(tmp_path, monkeypatch):
+def test_meta_entries_excluded(monkeypatch):
     entries = ([{"cmd": "health", "tier": 0, "ts": _ts(i)} for i in range(10)] +
                [{"cmd": "list", "tier": 1, "ts": _ts(i+10)} for i in range(5)])
-    _write_entries(tmp_path, entries, monkeypatch)
+    _mock_entries(entries, monkeypatch)
     r = dim_disclosure.check()
     assert r["meta_entries"] == 10
     assert r["scored_entries"] == 5
 
 
-def test_insufficient_sample_returns_calibrating(tmp_path, monkeypatch):
+def test_insufficient_sample_returns_calibrating(monkeypatch):
     entries = [{"cmd": "list", "tier": 1, "ts": _ts(i)} for i in range(5)]
-    _write_entries(tmp_path, entries, monkeypatch)
+    _mock_entries(entries, monkeypatch)
     r = dim_disclosure.check()
     assert r["zone"] == "CALIBRATING"
     assert "Collecting baseline" in r["hint"]
 
 
-def test_unknown_share_over_50pct_forces_calibrating(tmp_path, monkeypatch):
-    entries = ([{"cmd": "list", "ts": _ts(i)} for i in range(300)] +
-               [{"cmd": "list", "tier": 1, "ts": _ts(i+300)} for i in range(250)])
-    _write_entries(tmp_path, entries, monkeypatch)
+def test_unknown_share_over_50pct_forces_calibrating(monkeypatch):
+    entries = ([{"cmd": "list", "tier": 1, "ts": _ts(i + 300)} for i in range(260)] +
+               [{"cmd": "list", "ts": _ts(i)} for i in range(300)])
+    _mock_entries(entries, monkeypatch)
     r = dim_disclosure.check()
     assert r["zone"] == "CALIBRATING"
     assert "drain" in r["hint"]
@@ -79,10 +79,10 @@ def test_repeated_search_with_same_hash_counts_repetition():
     assert t["repetition"] == 1
 
 
-def test_scoring_active_gate(tmp_path, monkeypatch):
+def test_scoring_active_gate(monkeypatch):
     """Even with 200+ entries, if SCORING_ACTIVE=False, zone is CALIBRATING."""
     entries = [{"cmd": "list", "tier": 1, "ts": _ts(i)} for i in range(250)]
-    _write_entries(tmp_path, entries, monkeypatch)
+    _mock_entries(entries, monkeypatch)
     monkeypatch.setattr(dim_disclosure, "SCORING_ACTIVE", False)
     r = dim_disclosure.check()
     assert r["score"] is None
