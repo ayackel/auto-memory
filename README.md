@@ -524,6 +524,56 @@ export SESSION_RECALL_ENABLE_FILE_BACKENDS=1
 # Or follow the full guide: deploy/install-other-backends.md
 ```
 
+## Recall Efficacy
+
+auto-memory tracks what it captures: which files you touched, which symbols appeared in your messages, which sessions produced actionable recall. The efficacy subsystem measures capture completeness and data freshness.
+
+### Commands
+
+**`session-recall efficacy`** — Analyze capture coverage and signal decay.
+
+```bash
+session-recall efficacy [--days N] [--repo owner/repo] [--session ID] [--json]
+```
+
+**`session-recall prune`** — Clean stale metadata and reclaim space. Respects `SESSION_RECALL_RETENTION_DAYS` (default 90 days).
+
+```bash
+session-recall prune [--json]
+```
+
+**`session-recall stats`** — Display capture budget usage, database size, and index health.
+
+```bash
+session-recall stats [--json]
+```
+
+**`session-recall doctor`** — Run full efficacy diagnostics: check for capture timeouts, index gaps, and signal loss.
+
+```bash
+session-recall doctor [--json]
+```
+
+### Automatic Capture
+
+Capture runs automatically after every command, time-boxed to ~150ms. If capture times out or fails, it fails silently and does not block your session.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SESSION_RECALL_EFFICACY_DB` | `~/.copilot/efficacy.db` | SQLite database for capture metrics and signals |
+| `SESSION_RECALL_RETENTION_DAYS` | `90` | Number of days to retain captured session data |
+| `SESSION_RECALL_CAPTURE_BUDGET_MS` | `150` | Max time (ms) for automatic capture before timeout |
+| `SESSION_RECALL_NO_CAPTURE` | unset | Set to `1` to disable automatic capture (opt-out) |
+
+### v1 Limitations
+
+- **Referenced signal deferred** — Symbol cross-references across sessions are calculated on-demand, not indexed.
+- **Touched measures first-use-after-surface** — File access metrics capture first retrieval after surface, not subsequent reuse.
+- **Session escalation is correlation** — Escalating a session to "critical recall" is based on correlation with telemetry markers (show/export/diff), not surfaced intent.
+- **Deleted-worktree paths degrade to abspath keys** — Paths in deleted worktrees fall back to absolute paths for indexing, reducing locality.
+
 ## Agent Integration
 
 auto-memory works with **any agent that supports instruction files** — GitHub Copilot CLI, Claude Code, Cursor, Aider, Windsurf, and more. Installation wires session-recall into your agent's instruction file so it runs context recall automatically.
