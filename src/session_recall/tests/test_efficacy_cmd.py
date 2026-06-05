@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 import types
 from contextlib import redirect_stdout
 
@@ -41,6 +42,15 @@ def _run(db, **kw):
     with redirect_stdout(buf):
         rc = eff_cmd.run(args, db_path=db)
     return rc, json.loads(buf.getvalue())
+
+
+def _seed_repo_store(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY, repository TEXT)")
+    conn.execute("INSERT INTO sessions VALUES('sess-1', 'acme/one')")
+    conn.execute("INSERT INTO sessions VALUES('sess-2', 'acme/two')")
+    conn.commit()
+    conn.close()
 
 
 def test_rates_and_counts(tmp_path, monkeypatch):
@@ -122,6 +132,52 @@ def test_per_session_worst_honors_session_filter(tmp_path, monkeypatch):
     rc, out = _run(db, session="sess-1")
     assert rc == 0
     assert out["per_session_worst"] == [{
+        "session_id": "sess-1",
+        "surfaces": 1,
+        "hits": 1,
+        "rate": 1.0,
+    }]
+
+
+def test_repo_filter_changes_overall_metrics(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    db = str(tmp_path / "eff.db")
+    store = str(tmp_path / "store.db")
+    _seed_repo_store(store)
+    monkeypatch.setattr(eff_cmd, "DB_PATH", store)
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','f1','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','f1','2099-01-01T00:00:05.000000Z',1)")
+    conn.execute("INSERT INTO surfaced VALUES('sess-2','f2','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.commit()
+    conn.close()
+
+    _, all_out = _run(db)
+    _, repo_out = _run(db, repo="acme/one")
+
+    assert all_out["blended"]["surfaces"] == 2
+    assert all_out["blended"]["hits"] == 1
+    assert repo_out["blended"]["surfaces"] == 1
+    assert repo_out["blended"]["hits"] == 1
+    assert repo_out["file_recall"]["rate"] == 1.0
+
+
+def test_repo_filter_changes_per_session_worst(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    db = str(tmp_path / "eff.db")
+    store = str(tmp_path / "store.db")
+    _seed_repo_store(store)
+    monkeypatch.setattr(eff_cmd, "DB_PATH", store)
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','f1','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','f1','2099-01-01T00:00:05.000000Z',1)")
+    conn.execute("INSERT INTO surfaced VALUES('sess-2','f2','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.commit()
+    conn.close()
+
+    _, repo_out = _run(db, repo="acme/one")
+
+    assert repo_out["per_session_worst"] == [{
         "session_id": "sess-1",
         "surfaces": 1,
         "hits": 1,

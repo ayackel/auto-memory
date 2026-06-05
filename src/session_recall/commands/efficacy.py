@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from ..config import EFFICACY_DB_PATH
+from ..config import DB_PATH, EFFICACY_DB_PATH
+from ..db.connect import connect_ro
 from ..db import efficacy
 from ..util.format_output import output
 
@@ -22,7 +23,31 @@ def _filters(args):
     if getattr(args, "session", None):
         clauses.append("s.session_id = ?")
         params.append(args.session)
+    repo_ids = _repo_session_ids(getattr(args, "repo", None))
+    if repo_ids is not None:
+        if repo_ids:
+            placeholders = ",".join("?" * len(repo_ids))
+            clauses.append(f"s.session_id IN ({placeholders})")
+            params.extend(sorted(repo_ids))
+        else:
+            clauses.append("1=0")
     return clauses, params
+
+
+def _repo_session_ids(repo: str | None) -> set[str] | None:
+    if not repo or repo == "all":
+        return None
+    try:
+        ro = connect_ro(DB_PATH)
+    except Exception:
+        return set()
+    try:
+        rows = ro.execute("SELECT id FROM sessions WHERE repository = ?", (repo,)).fetchall()
+        return {r["id"] for r in rows if r["id"]}
+    except Exception:
+        return set()
+    finally:
+        ro.close()
 
 
 def _counts(conn, cutoff, args):
