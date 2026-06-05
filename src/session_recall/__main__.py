@@ -5,8 +5,9 @@ import sys
 import time
 
 from . import __version__
-from .config import TELEMETRY_PATH
-from .util import telemetry
+from .config import EFFICACY_DB_PATH, AGENT_SESSION_ID
+from .util import telemetry, capture
+from .db import efficacy
 
 
 def _non_negative_int(v):
@@ -27,11 +28,16 @@ TIER_MAP = {
     "health": 0,
     "schema-check": 0,  # Tier 0 — meta/ops
     "calibrate": 0,  # Tier 0 — meta (Phase 4)
+    "efficacy": 0,
+    "prune": 0,
+    "stats": 0,
+    "doctor": 0,
 }
 
 
 def main() -> None:
-    telemetry.init(TELEMETRY_PATH)
+    efficacy.init(EFFICACY_DB_PATH).close()  # ensure schema once per process
+    telemetry.init(EFFICACY_DB_PATH)
     t0 = time.monotonic()
     parser = argparse.ArgumentParser(
         prog="auto-memory",
@@ -147,6 +153,21 @@ def main() -> None:
         default="all",
     )
 
+    p_eff = sub.add_parser("efficacy", help="Recall efficacy report (recalled-then-used rate)")
+    p_eff.add_argument("--days", type=int, default=30)
+    p_eff.add_argument("--repo", default=None)
+    p_eff.add_argument("--session", default=None)
+    p_eff.add_argument("--json", action="store_true")
+
+    p_prune = sub.add_parser("prune", help="Delete efficacy data older than retention window")
+    p_prune.add_argument("--json", action="store_true")
+
+    p_stats = sub.add_parser("stats", help="Telemetry usage summary")
+    p_stats.add_argument("--json", action="store_true")
+
+    p_doctor = sub.add_parser("doctor", help="Telemetry/store health check")
+    p_doctor.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -185,6 +206,22 @@ def main() -> None:
         from .commands.health import run
 
         exit_code = run(args)
+    elif args.command == "efficacy":
+        from .commands.efficacy import run
+
+        exit_code = run(args)
+    elif args.command == "prune":
+        from .commands.prune import run
+
+        exit_code = run(args)
+    elif args.command == "stats":
+        from .commands.stats import run
+
+        exit_code = run(args)
+    elif args.command == "doctor":
+        from .commands.doctor import run
+
+        exit_code = run(args)
     else:
         print(
             f"'{args.command}' not yet implemented. Coming in Phase 2.", file=sys.stderr
@@ -208,7 +245,13 @@ def main() -> None:
         query_hash=qhash,
         session_id_prefix=sid_prefix,
         window_tier=wtier,
+        session_id=AGENT_SESSION_ID,
     )
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    capture.run(args)
     sys.exit(exit_code)
 
 
