@@ -36,3 +36,16 @@ EXPECTED_SCHEMA_VERSION = 1
 
 JSONL_DEFAULT_LOOKBACK_DAYS = int(os.environ.get("SESSION_RECALL_JSONL_DAYS", "5"))
 SQLITE_DEFAULT_LOOKBACK_DAYS = 30
+
+EFFICACY_DB_PATH = os.environ.get(
+    "SESSION_RECALL_EFFICACY_DB",
+    str(Path.home() / ".copilot" / "scripts" / "session-recall-efficacy.db"),
+)
+
+RETENTION_DAYS = int(os.environ.get("SESSION_RECALL_RETENTION_DAYS", "90"))
+
+CAPTURE_BUDGET_MS = int(os.environ.get("SESSION_RECALL_CAPTURE_BUDGET_MS", "150"))
+
+NO_CAPTURE = _truthy("SESSION_RECALL_NO_CAPTURE")
+
+AGENT_SESSION_ID = os.environ.get("COPILOT_AGENT_SESSION_ID")
