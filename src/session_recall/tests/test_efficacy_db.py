@@ -193,3 +193,39 @@ def test_init_retries_when_schema_db_is_temporarily_locked(tmp_path):
         if conn is not None:
             conn.close()
         t.join()
+
+
+def test_check_health_reports_integrity_and_wal_checkpoint(tmp_path):
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.init(db)
+    try:
+        health = efficacy.check_health(conn)
+    finally:
+        conn.close()
+
+    assert health["ok"] is True
+    assert health["integrity"]["ok"] is True
+    assert health["integrity"]["detail"] == "ok"
+    assert health["wal"]["ok"] is True
+    assert "checkpointed_frames" in health["wal"]
+
+
+def test_init_recovers_from_corrupt_db_non_destructively(tmp_path):
+    db = tmp_path / "eff.db"
+    db.write_bytes(b"this is not sqlite")
+
+    conn = efficacy.init(str(db))
+    conn.close()
+
+    archived = list(tmp_path.glob("eff.db.corrupt-*"))
+    assert len(archived) == 1
+    assert archived[0].read_bytes() == b"this is not sqlite"
+
+    conn = efficacy.connect(str(db))
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "telemetry" in names
+    finally:
+        conn.close()

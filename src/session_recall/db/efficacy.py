@@ -11,6 +11,13 @@ from ..config import EFFICACY_DB_PATH
 SCHEMA_VERSION = 1
 RW_BUSY_TIMEOUT_MS = 250
 SCHEMA_LOCK_RETRY_DELAYS_MS = (0, 40, 80, 160, 320)
+_CORRUPTION_MARKERS = (
+    "database disk image is malformed",
+    "file is not a database",
+    "database corruption",
+    "malformed",
+    "integrity check failed",
+)
 
 _SCHEMA_TABLES = (
     """
@@ -95,6 +102,96 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _is_corruption_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CORRUPTION_MARKERS)
+
+
+def check_integrity(conn: sqlite3.Connection, quick: bool = True) -> dict:
+    pragma = "PRAGMA quick_check(1)" if quick else "PRAGMA integrity_check(1)"
+    check_name = "quick_check" if quick else "integrity_check"
+    try:
+        rows = conn.execute(pragma).fetchall()
+    except sqlite3.Error as exc:
+        return {"ok": False, "check": check_name, "detail": str(exc)}
+    details = [str(row[0]) for row in rows if row and str(row[0]).lower() != "ok"]
+    if details:
+        return {"ok": False, "check": check_name, "detail": "; ".join(details)}
+    return {"ok": True, "check": check_name, "detail": "ok"}
+
+
+def check_wal(conn: sqlite3.Connection) -> dict:
+    try:
+        row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    except sqlite3.Error as exc:
+        return {"ok": False, "detail": str(exc), "busy": None}
+    if row is None:
+        return {"ok": True, "detail": "no checkpoint data", "busy": 0}
+    busy = int(row[0])
+    log_frames = int(row[1])
+    checkpointed_frames = int(row[2])
+    return {
+        "ok": busy == 0,
+        "detail": "ok" if busy == 0 else "checkpoint busy",
+        "busy": busy,
+        "log_frames": log_frames,
+        "checkpointed_frames": checkpointed_frames,
+    }
+
+
+def check_health(conn: sqlite3.Connection) -> dict:
+    integrity = check_integrity(conn, quick=True)
+    wal = check_wal(conn)
+    return {
+        "ok": bool(integrity["ok"]) and bool(wal["ok"]),
+        "integrity": integrity,
+        "wal": wal,
+    }
+
+
+def _archive_corrupt_file(path: Path, stamp: str) -> str | None:
+    if not path.exists():
+        return None
+    attempt = 0
+    while True:
+        suffix = f".corrupt-{stamp}" if attempt == 0 else f".corrupt-{stamp}-{attempt}"
+        archived = path.with_name(f"{path.name}{suffix}")
+        if not archived.exists():
+            path.replace(archived)
+            return str(archived)
+        attempt += 1
+
+
+def recover_corrupt_store(db_path: str | None = None) -> list[str]:
+    path = Path(db_path or EFFICACY_DB_PATH)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    archived: list[str] = []
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        moved = _archive_corrupt_file(candidate, stamp)
+        if moved:
+            archived.append(moved)
+    return archived
+
+
+def check_store_health(db_path: str | None = None) -> dict:
+    target = str(Path(db_path or EFFICACY_DB_PATH))
+    conn = None
+    try:
+        conn = connect(target)
+        ensure_schema(conn)
+        return check_health(conn)
+    except sqlite3.Error as exc:
+        return {
+            "ok": False,
+            "integrity": {"ok": False, "check": "quick_check", "detail": str(exc)},
+            "wal": {"ok": False, "detail": str(exc), "busy": None},
+            "corrupt": _is_corruption_error(exc),
+        }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     last_busy_error = None
     for delay_ms in SCHEMA_LOCK_RETRY_DELAYS_MS:
@@ -150,9 +247,24 @@ def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
 
 def init(db_path: str | None = None) -> sqlite3.Connection:
     """Connect AND ensure schema. Call once per process (or in tests)."""
-    conn = connect(db_path)
-    ensure_schema(conn)
-    return conn
+    target = str(Path(db_path or EFFICACY_DB_PATH))
+    recovered = False
+    while True:
+        conn = None
+        try:
+            conn = connect(target)
+            ensure_schema(conn)
+            integrity = check_integrity(conn, quick=True)
+            if not integrity["ok"]:
+                raise sqlite3.DatabaseError(f"integrity check failed: {integrity['detail']}")
+            return conn
+        except sqlite3.Error as exc:
+            if conn is not None:
+                conn.close()
+            if recovered or not _is_corruption_error(exc):
+                raise
+            recover_corrupt_store(target)
+            recovered = True
 
 
 def _migrate_to_v1(conn: sqlite3.Connection) -> None:

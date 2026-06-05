@@ -46,6 +46,7 @@ def test_doctor_reports_ok(tmp_path):
     rc, out = _run(doctor_cmd, db)
     assert rc == 0
     assert out["telemetry_rows"] == 3
+    assert out["store_health"]["ok"] is True
     assert "status" in out
     telemetry.init(None)
 
