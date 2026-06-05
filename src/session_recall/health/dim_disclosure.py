@@ -8,7 +8,7 @@ from __future__ import annotations
 import statistics
 from datetime import datetime, timedelta, timezone
 from ..util import telemetry
-from ..util.timestamps import parse_timestamp
+from ..util.timestamps import normalize_timestamp, parse_timestamp
 
 # ---- Stage-2 gate. Operator flips this to True after hand-editing thresholds. ----
 SCORING_ACTIVE = False
@@ -39,7 +39,10 @@ def _parse_ts(ts: str) -> datetime | None:
 def _classify_transitions(scored: list[dict]) -> dict:
     """Returns {healthy, neutral, suspicious, repetition} counts over adjacent pairs."""
     healthy = neutral = suspicious = repetition = 0
-    sorted_e = sorted(scored, key=lambda e: e.get("ts") or "")
+    sorted_e = sorted(
+        scored,
+        key=lambda e: normalize_timestamp(e.get("ts")) or "9999-12-31T23:59:59.999999Z",
+    )
     for prev, curr in zip(sorted_e, sorted_e[1:]):
         pt, ct = prev.get("tier"), curr.get("tier")
         if pt is None or ct is None:

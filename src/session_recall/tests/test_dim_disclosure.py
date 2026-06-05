@@ -97,3 +97,24 @@ def test_t3_to_t3_long_gap_mixed_precision_is_suspicious():
     t = dim_disclosure._classify_transitions(entries)
     assert t["suspicious"] >= 1
     assert t["neutral"] == 0
+
+
+def test_mixed_precision_same_second_preserves_chronology():
+    entries = [
+        {"cmd": "show", "tier": 3, "ts": "2026-01-01T00:00:00.100Z"},
+        {"cmd": "list", "tier": 1, "ts": "2026-01-01T00:00:00Z"},
+    ]
+    t = dim_disclosure._classify_transitions(entries)
+    assert t["healthy"] == 1
+    assert t["suspicious"] == 0
+
+
+def test_mixed_timestamp_forms_sort_in_true_time_order():
+    entries = [
+        {"cmd": "show", "tier": 3, "ts": "2026-01-01T00:00:00.100Z"},
+        {"cmd": "search", "tier": 2, "ts": "2026-01-01T00:00:00.050+00:00"},
+        {"cmd": "list", "tier": 1, "ts": "2026-01-01T00:00:00Z"},
+    ]
+    t = dim_disclosure._classify_transitions(entries)
+    assert t["healthy"] == 2
+    assert t["suspicious"] == 0
