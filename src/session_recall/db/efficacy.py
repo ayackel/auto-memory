@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..config import EFFICACY_DB_PATH
 
 SCHEMA_VERSION = 1
+RW_BUSY_TIMEOUT_MS = 250
+SCHEMA_LOCK_RETRY_DELAYS_MS = (0, 40, 80, 160, 320)
 
 _SCHEMA_TABLES = (
     """
@@ -84,15 +87,35 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     """Open a read-write WAL connection. Assumes schema already initialized."""
     path = Path(db_path or EFFICACY_DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=1.0)
+    conn = sqlite3.connect(str(path), timeout=RW_BUSY_TIMEOUT_MS / 1000.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 1000")
+    conn.execute(f"PRAGMA busy_timeout = {RW_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    last_busy_error = None
+    for delay_ms in SCHEMA_LOCK_RETRY_DELAYS_MS:
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+        try:
+            _ensure_schema_once(conn)
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_busy_error(exc):
+                raise
+            last_busy_error = exc
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+    if last_busy_error is not None:
+        raise last_busy_error
+
+
+def _ensure_schema_once(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         current_version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -118,6 +141,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.rollback()
         raise
+
+
+def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
 
 
 def init(db_path: str | None = None) -> sqlite3.Connection:

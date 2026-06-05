@@ -1,5 +1,6 @@
 # src/session_recall/tests/test_efficacy_db.py
 import threading
+import time
 
 from session_recall.db import efficacy
 
@@ -162,3 +163,33 @@ def test_init_concurrent_upgrade_from_v0_schema(tmp_path):
         thread.join()
 
     assert not errors
+
+
+def test_init_retries_when_schema_db_is_temporarily_locked(tmp_path):
+    db = str(tmp_path / "eff.db")
+    efficacy.init(db).close()
+
+    lock_ready = threading.Event()
+
+    def hold_lock() -> None:
+        conn = efficacy.connect(db)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            lock_ready.set()
+            time.sleep(1.2)
+            conn.commit()
+        finally:
+            conn.close()
+
+    t = threading.Thread(target=hold_lock)
+    t.start()
+    lock_ready.wait(timeout=2)
+
+    conn = None
+    try:
+        conn = efficacy.init(db)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == efficacy.SCHEMA_VERSION
+    finally:
+        if conn is not None:
+            conn.close()
+        t.join()

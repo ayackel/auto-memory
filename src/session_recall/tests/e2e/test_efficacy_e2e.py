@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from session_recall.db import efficacy
@@ -92,3 +93,31 @@ def test_efficacy_command_runs_e2e(tmp_path):
     assert out["unique_surfaces"] == 1
     assert out["needed"] == 20
     assert out["capture_health"]["runs"] >= 2
+
+
+def test_concurrent_startup_init_waits_for_short_efficacy_lock(tmp_path):
+    store = str(tmp_path / "store.db")
+    eff = str(tmp_path / "eff.db")
+    _seed_store(store)
+    efficacy.init(eff).close()
+
+    ready = threading.Event()
+
+    def hold_schema_lock():
+        conn = efficacy.connect(eff)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ready.set()
+            time.sleep(1.2)
+            conn.commit()
+        finally:
+            conn.close()
+
+    locker = threading.Thread(target=hold_schema_lock)
+    locker.start()
+    ready.wait(timeout=2)
+    try:
+        run = _cli(store, eff, "files", "--json")
+        assert run.returncode == 0, run.stderr
+    finally:
+        locker.join()
