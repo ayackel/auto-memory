@@ -8,8 +8,7 @@ from ..util.format_output import output
 
 
 def run(args, db_path: str | None = None) -> int:
-    telemetry.init(db_path or EFFICACY_DB_PATH)
-    entries = telemetry.load_entries(limit=500)
+    entries = telemetry.load_entries(limit=500, db_path=db_path or EFFICACY_DB_PATH)
     rows = len(entries)
     errors = sum(1 for e in entries if int(e.get("exit_code") or 0) != 0)
     busy = sum(int(e.get("busy_hits") or 0) for e in entries)

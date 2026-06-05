@@ -10,8 +10,7 @@ from ..util.format_output import output
 
 
 def run(args, db_path: str | None = None) -> int:
-    telemetry.init(db_path or EFFICACY_DB_PATH)
-    entries = telemetry.load_entries(limit=500)
+    entries = telemetry.load_entries(limit=500, db_path=db_path or EFFICACY_DB_PATH)
     agg = defaultdict(lambda: {"count": 0, "total_ms": 0})
     for e in entries:
         a = agg[e.get("cmd", "?")]

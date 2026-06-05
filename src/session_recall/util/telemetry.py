@@ -19,16 +19,23 @@ def init(db_path) -> None:
     _DB_PATH = db_path
 
 
+def _resolve_db_path(db_path: str | None = None) -> str | None:
+    if db_path is not None:
+       return db_path
+    return _DB_PATH
+
+
 def record(cmd: str, duration_ms: int, busy_hits: int = 0, attempts: int = 1,
-         rows: int = 0, exit_code: int = 0, schema_ok: bool = True,
+        rows: int = 0, exit_code: int = 0, schema_ok: bool = True,
          tier: int | None = None, query_hash: str | None = None,
          session_id_prefix: str | None = None, window_tier: str | None = None,
-         session_id: str | None = None) -> None:
+         session_id: str | None = None, db_path: str | None = None) -> None:
     """Append a telemetry row. Silent fail — telemetry must never crash the CLI."""
-    if not _DB_PATH:
+    target_db_path = _resolve_db_path(db_path)
+    if not target_db_path:
        return
     try:
-       conn = efficacy.connect(_DB_PATH)
+       conn = efficacy.connect(target_db_path)
        try:
            conn.execute(
              "INSERT INTO telemetry (session_id, ts, cmd, duration_ms, busy_hits, "
@@ -45,16 +52,17 @@ def record(cmd: str, duration_ms: int, busy_hits: int = 0, attempts: int = 1,
        pass
 
 
-def load_entries(limit: int = 500) -> list[dict]:
+def load_entries(limit: int = 500, db_path: str | None = None) -> list[dict]:
     """Return up to `limit` most-recent rows as JSON-shaped dicts (chronological).
 
     Optional fields that are NULL are OMITTED, preserving the legacy JSON shape so
     consumers using `'tier' not in entry` keep working unchanged.
     """
-    if not _DB_PATH:
+    target_db_path = _resolve_db_path(db_path)
+    if not target_db_path:
        return []
     try:
-       conn = efficacy.connect(_DB_PATH)
+       conn = efficacy.connect(target_db_path)
        try:
            rows = conn.execute(
              "SELECT * FROM telemetry ORDER BY id DESC LIMIT ?", (limit,)

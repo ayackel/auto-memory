@@ -57,3 +57,18 @@ def test_load_entries_limit_and_order(tmp_db):
 def test_record_silent_when_uninitialized():
     telemetry.init(None)
     telemetry.record("list", 1)  # must not raise
+
+
+def test_load_entries_db_path_does_not_mutate_global(tmp_path):
+    db_a = str(tmp_path / "eff_a.db")
+    db_b = str(tmp_path / "eff_b.db")
+    efficacy.init(db_a).close()
+    efficacy.init(db_b).close()
+
+    telemetry.init(db_a)
+    telemetry.record("list", 10, tier=1)
+    telemetry.record("search", 20, tier=2, db_path=db_b)
+
+    assert telemetry.load_entries(limit=1)[0]["cmd"] == "list"
+    assert telemetry.load_entries(limit=1, db_path=db_b)[0]["cmd"] == "search"
+    telemetry.init(None)
