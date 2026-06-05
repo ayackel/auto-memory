@@ -21,10 +21,8 @@ def test_missing_db_exits_with_error(monkeypatch):
         "SESSION_RECALL_CLI_STATE_ROOT", "/tmp/nonexistent_state_e2e_12345"
     )
     result = run_cli("list", "--json", db_path="/tmp/nonexistent_e2e_db_12345.db")
-    # Provider layer handles missing DB gracefully: no providers → empty results.
-    assert result.returncode == 0
-    data = parse_json(result)
-    assert data["count"] == 0
+    assert result.returncode == 4
+    assert "database not found" in result.stderr.lower()
 
 
 def test_empty_db_list(empty_db):
