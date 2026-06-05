@@ -187,3 +187,24 @@ def test_capture_does_not_run_prune_inline(env, monkeypatch):
     monkeypatch.setattr(capture.efficacy, "prune", fake_prune)
     capture.run(_args("files", {"files": ["/wt/foo.py"]}))
     assert calls["n"] == 0
+
+
+def test_closed_turn_boundary_handles_sparse_turns(env):
+    _make_copilot_store(env.copilot, "sess-1", turns=[(3, "a")], files=[])
+    capture.run(_args("files", {"files": ["/wt/foo.py", "/wt/bar.py"]}))
+
+    c = sqlite3.connect(env.copilot)
+    c.execute("INSERT INTO turns(session_id,turn_index,assistant_response) VALUES('sess-1',10,'a')")
+    c.execute("INSERT INTO turns(session_id,turn_index,assistant_response) VALUES('sess-1',11,'')")
+    c.execute("INSERT INTO session_files(session_id,file_path,turn_index,first_seen_at) VALUES(?,?,?,?)",
+              ("sess-1", "/wt/foo.py", 10, "t"))
+    c.execute("INSERT INTO session_files(session_id,file_path,turn_index,first_seen_at) VALUES(?,?,?,?)",
+              ("sess-1", "/wt/bar.py", 11, "t"))
+    c.commit()
+    c.close()
+
+    capture.run(_args("list", {"sessions": []}))
+    conn = efficacy.connect(env.eff)
+    touched = conn.execute("SELECT key FROM touched ORDER BY key").fetchall()
+    assert [r["key"] for r in touched] == ["K-foo.py"]
+    conn.close()

@@ -530,10 +530,14 @@ auto-memory tracks what it captures: which files you touched, which symbols appe
 
 ### Commands
 
-**`session-recall efficacy`** — Analyze capture coverage and signal decay.
+**`session-recall efficacy`** — Analyze recalled-then-used signal from captured surfaces.
 
 ```bash
 session-recall efficacy [--days N] [--repo owner/repo] [--session ID] [--json]
+
+# Semantics: surfaces are counted when `first_ts >= cutoff` (inclusive boundary).
+# File hits require a post-surface touch (`touched.turn > surfaced.turn`).
+# Session hits require a post-surface escalation (`show`/`export`/`diff` after `first_ts`).
 ```
 
 **`session-recall prune`** — Clean stale metadata and reclaim space. Respects `SESSION_RECALL_RETENTION_DAYS` (default 90 days).

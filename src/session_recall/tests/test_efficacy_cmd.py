@@ -183,3 +183,42 @@ def test_repo_filter_changes_per_session_worst(tmp_path, monkeypatch):
         "hits": 1,
         "rate": 1.0,
     }]
+
+
+def test_file_hits_require_post_surface_use(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','f1','file','files','2099-01-01T00:00:05.000000Z',5)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','f1','2099-01-01T00:00:06.000000Z',4)")
+    conn.commit()
+    conn.close()
+
+    rc, out = _run(db)
+    assert rc == 0
+    assert out["file_recall"]["surfaces"] == 1
+    assert out["file_recall"]["hits"] == 0
+    assert out["blended"]["rate"] == 0.0
+
+
+def test_days_cutoff_boundary_is_inclusive(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    monkeypatch.setattr(eff_cmd, "_cutoff", lambda _days: "2099-01-01T00:00:00.000000Z")
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','old','file','files','2088-12-31T23:59:59.999999Z',1)")
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','boundary','file','files','2099-01-01T00:00:00.000000Z',2)")
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','newer','file','files','2099-01-01T00:00:00.000001Z',3)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','boundary','2099-01-01T00:00:01.000000Z',4)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','newer','2099-01-01T00:00:01.000001Z',4)")
+    conn.execute("INSERT INTO capture_stat(session_id,ts,status) VALUES('sess-1','2088-12-31T23:59:59.999999Z','completed')")
+    conn.execute("INSERT INTO capture_stat(session_id,ts,status) VALUES('sess-1','2099-01-01T00:00:00.000000Z','completed')")
+    conn.commit()
+    conn.close()
+
+    rc, out = _run(db, days=30)
+    assert rc == 0
+    assert out["window_days"] == 30
+    assert out["file_recall"]["surfaces"] == 2
+    assert out["file_recall"]["hits"] == 2
+    assert out["capture_health"]["runs"] == 1

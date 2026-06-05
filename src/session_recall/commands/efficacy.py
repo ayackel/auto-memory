@@ -60,7 +60,8 @@ def _counts(conn, cutoff, args):
     ).fetchone()[0]
     file_hits = conn.execute(
         f"SELECT COUNT(*) FROM surfaced s WHERE s.kind='file' AND {where} "
-        "AND EXISTS(SELECT 1 FROM touched t WHERE t.session_id=s.session_id AND t.key=s.key)",
+        "AND EXISTS(SELECT 1 FROM touched t WHERE t.session_id=s.session_id "
+        "AND t.key=s.key AND t.turn>s.turn AND t.ts>s.first_ts)",
         base,
     ).fetchone()[0]
     sess_surfaces = conn.execute(
