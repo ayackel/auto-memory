@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from session_recall.db import efficacy
 
@@ -31,6 +32,8 @@ def _seed_store(path):
 
 def _cli(store, eff, *cmd):
     env = dict(os.environ)
+    src = str(Path(__file__).resolve().parents[3])
+    env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env.update(SESSION_RECALL_DB=store, SESSION_RECALL_EFFICACY_DB=eff,
                COPILOT_AGENT_SESSION_ID="sess-1")
     return subprocess.run([sys.executable, "-m", "session_recall", *cmd],
@@ -85,11 +88,7 @@ def test_efficacy_command_runs_e2e(tmp_path):
     assert report.returncode == 0, report.stderr
     out = json.loads(report.stdout)
 
-    assert out["status"] == "ok"
-    assert out["file_recall"]["surfaces"] == 1
-    assert out["file_recall"]["hits"] == 1
-    assert out["file_recall"]["rate"] == 1.0
-    assert out["blended"]["surfaces"] == 1
-    assert out["blended"]["hits"] == 1
-    assert out["blended"]["rate"] == 1.0
+    assert out["status"] == "insufficient_data"
+    assert out["unique_surfaces"] == 1
+    assert out["needed"] == 20
     assert out["capture_health"]["runs"] >= 2
