@@ -5,11 +5,9 @@ Stage 2 (after operator runs `calibrate --analyze` and hand-edits thresholds):
   operator fills in concrete GREEN/AMBER/RED thresholds below and flips SCORING_ACTIVE=True.
 """
 from __future__ import annotations
-import json
 import statistics
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from ..config import TELEMETRY_PATH
+from ..util import telemetry
 
 # ---- Stage-2 gate. Operator flips this to True after hand-editing thresholds. ----
 SCORING_ACTIVE = False
@@ -28,10 +26,7 @@ SWEEP_WINDOW_MIN = 5  # minutes; T3→T3 within this is drill-down, beyond is su
 
 def _load_entries() -> list[dict]:
     try:
-        path = Path(TELEMETRY_PATH)
-        if not path.exists():
-            return []
-        return json.loads(path.read_text()).get("entries", [])
+        return telemetry.load_entries()
     except Exception:
         return []
 
