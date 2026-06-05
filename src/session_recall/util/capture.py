@@ -107,13 +107,46 @@ def _closed_turn(ro, session_id: str) -> int:
     return m if m is not None else -1
 
 
+def _latest_session_id(ro) -> str | None:
+    try:
+        row = ro.execute(
+            "SELECT id FROM sessions "
+            "ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        row = ro.execute(
+            "SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return None
+    return row["id"] or None
+
+
+def _validated_session_id(ro, configured_session_id: str | None) -> tuple[str | None, str | None]:
+    if not configured_session_id:
+        return None, "identity_missing"
+    try:
+        current = ro.execute(
+            "SELECT id FROM sessions WHERE id=? LIMIT 1",
+            (configured_session_id,),
+        ).fetchone()
+        if current is None:
+            return None, "identity_unverifiable"
+        live_session_id = _latest_session_id(ro)
+        if not live_session_id:
+            return None, "identity_unverifiable"
+        if live_session_id != configured_session_id:
+            return None, "identity_mismatch"
+        return configured_session_id, None
+    except Exception:
+        return None, "identity_unverifiable"
+
+
 def run(args, capture_payload: dict | None = None) -> None:
     """Entry point. Never raises; bails silently on budget/errors."""
     if getattr(config, "NO_CAPTURE", False):
         return
     session_id = getattr(config, "AGENT_SESSION_ID", None)
-    if not session_id:
-        return
 
     t0 = time.monotonic()
     deadline = t0 + config.CAPTURE_BUDGET_MS / 1000.0
@@ -121,11 +154,25 @@ def run(args, capture_payload: dict | None = None) -> None:
     ts = efficacy.now_iso()
     surfaced_n = 0
     touched_n = 0
+    identity_status = "identity_missing" if not session_id else None
     conn = None
     ro = None
     try:
         conn = efficacy.connect(config.EFFICACY_DB_PATH)
+        if identity_status is not None:
+            status = identity_status
+            return
         ro = connect_ro(config.DB_PATH)
+        if time.monotonic() > deadline:
+            status = "timeout"
+            return
+        session_id, identity_status = _validated_session_id(ro, session_id)
+        if identity_status is not None:
+            status = identity_status
+            return
+        if not session_id:
+            status = "identity_unverifiable"
+            return
         if time.monotonic() > deadline:
             status = "timeout"
             return

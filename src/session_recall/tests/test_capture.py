@@ -100,9 +100,40 @@ def test_no_capture_env_disables(env, monkeypatch):
     conn.close()
 
 
-def test_missing_session_id_is_silent(env, monkeypatch):
+def test_missing_session_id_skips_attribution_and_records_status(env, monkeypatch):
     monkeypatch.setattr(capture.config, "AGENT_SESSION_ID", None, raising=False)
     capture.run(_args("files", {"files": ["/wt/foo.py"]}))  # must not raise
+    conn = efficacy.connect(env.eff)
+    row = conn.execute(
+        "SELECT status, surfaced_n, touched_n FROM capture_stat ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["status"] == "identity_missing"
+    assert row["surfaced_n"] == 0
+    assert row["touched_n"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM surfaced").fetchone()[0] == 0
+    conn.close()
+
+
+def test_identity_mismatch_skips_attribution_and_records_status(env):
+    _make_copilot_store(env.copilot, "sess-1", turns=[(0, "a")], files=[])
+    c = sqlite3.connect(env.copilot)
+    c.execute("INSERT INTO sessions(id,cwd,repository) VALUES(?,?,?)", ("sess-2", "/wt", "owner/repo"))
+    c.execute(
+        "INSERT INTO turns(session_id,turn_index,assistant_response) VALUES('sess-2',0,'a')"
+    )
+    c.commit()
+    c.close()
+
+    capture.run(_args("files", {"files": ["/wt/foo.py"]}))
+    conn = efficacy.connect(env.eff)
+    row = conn.execute(
+        "SELECT status, surfaced_n, touched_n FROM capture_stat ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["status"] == "identity_mismatch"
+    assert row["surfaced_n"] == 0
+    assert row["touched_n"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM surfaced").fetchone()[0] == 0
+    conn.close()
 
 
 def test_capture_stat_recorded(env):
