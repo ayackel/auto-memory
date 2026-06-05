@@ -1,4 +1,5 @@
 # src/session_recall/tests/test_capture.py
+import os
 import sqlite3
 import types
 
@@ -8,7 +9,7 @@ from session_recall.db import efficacy
 from session_recall.util import capture, recall_key
 
 
-def _make_copilot_store(path, session_id, turns, files):
+def _make_copilot_store(path, session_id, turns, files, cwd="/wt", repository="owner/repo"):
     """turns: list[(turn_index, assistant_response)]; files: list[(turn_index, abspath)]."""
     c = sqlite3.connect(path)
     c.executescript(
@@ -18,6 +19,7 @@ def _make_copilot_store(path, session_id, turns, files):
         "CREATE TABLE session_files(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,"
         " file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT);"
     )
+    c.execute("INSERT INTO sessions(id,cwd,repository) VALUES(?,?,?)", (session_id, cwd, repository))
     for ti, ar in turns:
         c.execute("INSERT INTO turns(session_id,turn_index,assistant_response) VALUES(?,?,?)",
                   (session_id, ti, ar))
@@ -111,3 +113,45 @@ def test_capture_stat_recorded(env):
     assert row["status"] == "completed"
     assert row["surfaced_n"] == 1
     conn.close()
+
+
+def test_session_context_supplies_root_and_repo_id(env, tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    (root / ".git").mkdir()
+    fpath = str(root / "foo.py")
+    _make_copilot_store(
+        env.copilot,
+        "sess-1",
+        turns=[(0, "a")],
+        files=[],
+        cwd=str(nested),
+        repository="acme/tooling",
+    )
+    seen = []
+
+    def fake_file_key(path, **kwargs):
+        seen.append(kwargs)
+        return "K-" + os.path.basename(path)
+
+    monkeypatch.setattr(recall_key, "file_key", fake_file_key)
+    capture.run(_args("files", {"files": [fpath]}))
+    assert seen[0]["current_root"] == str(root)
+    assert seen[0]["repo_id"] == "acme/tooling"
+
+
+def test_degraded_capture_warns_with_rate_limit(env, monkeypatch, capsys):
+    monkeypatch.setattr(capture, "_DEGRADE_WINDOW_RUNS", 4)
+    monkeypatch.setattr(capture, "_DEGRADE_MIN_RUNS", 3)
+    monkeypatch.setattr(capture, "_DEGRADE_RATIO_WARN", 0.5)
+    monkeypatch.setattr(capture, "_WARN_COOLDOWN_SEC", 3600)
+    monkeypatch.setattr(capture.config, "CAPTURE_BUDGET_MS", 0, raising=False)
+
+    _make_copilot_store(env.copilot, "sess-1", turns=[(0, "a")], files=[])
+    payload = {"files": ["/wt/a.py", "/wt/b.py"]}
+    for _ in range(4):
+        capture.run(_args("files", payload))
+
+    err = capsys.readouterr().err
+    assert err.count("warning: capture degraded") == 1

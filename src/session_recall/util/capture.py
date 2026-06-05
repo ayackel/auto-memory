@@ -6,26 +6,86 @@ command surfaced and snapshots newly-used artifacts since a closed-turn watermar
 from __future__ import annotations
 
 import os
-import subprocess
+import sys
 import time
+from datetime import datetime, timezone
 
 from .. import config
 from ..db.connect import connect_ro
 from ..db import efficacy
 from . import recall_key
 
+_ROOT_CACHE: dict[str, str | None] = {}
+_SESSION_CTX_CACHE: dict[str, tuple[str, str | None, str | None]] = {}
+_WARN_STATUSES = {"timeout", "failed"}
+_DEGRADE_WINDOW_RUNS = 20
+_DEGRADE_MIN_RUNS = 10
+_DEGRADE_RATIO_WARN = 0.35
+_WARN_COOLDOWN_SEC = 600
 
-def _current_root() -> str | None:
+
+def _find_git_root(cwd: str) -> str | None:
+    cur = os.path.normpath(os.path.abspath(cwd))
+    while True:
+        if os.path.isdir(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _cached_root(cwd: str) -> str | None:
+    norm = os.path.normpath(os.path.abspath(cwd))
+    if norm in _ROOT_CACHE:
+        cached = _ROOT_CACHE[norm]
+        if cached is None or os.path.isdir(os.path.join(cached, ".git")):
+            return cached
+        _ROOT_CACHE.pop(norm, None)
+    root = _find_git_root(norm)
+    if len(_ROOT_CACHE) >= 64:
+        _ROOT_CACHE.clear()
+    _ROOT_CACHE[norm] = root
+    return root
+
+
+def _session_context(ro, session_id: str) -> tuple[str | None, str | None]:
+    cwd = os.getcwd()
+    repo = None
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=1, cwd=os.getcwd(),
-        )
-        if out.returncode == 0:
-            return out.stdout.strip() or None
+        row = ro.execute(
+            "SELECT cwd, repository FROM sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        if row is not None:
+            cwd = row["cwd"] or cwd
+            repository = row["repository"] if "repository" in row.keys() else None
+            if repository and "/" in repository and " " not in repository:
+                repo = repository
     except Exception:
         pass
-    return None
+    cached = _SESSION_CTX_CACHE.get(session_id)
+    if cached and cached[0] == cwd and cached[2] == repo:
+        return cached[1], cached[2]
+
+    root = _cached_root(cwd)
+    if len(_SESSION_CTX_CACHE) >= 128:
+        _SESSION_CTX_CACHE.clear()
+    _SESSION_CTX_CACHE[session_id] = (cwd, root, repo)
+    return root, repo
+
+
+def _parse_iso(ts: str) -> datetime | None:
+    try:
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+    except Exception:
+        return None
+
+
+def _warn(msg: str) -> None:
+    print(msg, file=sys.stderr)
 
 
 def _closed_turn(ro, session_id: str) -> int:
@@ -49,6 +109,7 @@ def run(args) -> None:
     t0 = time.monotonic()
     deadline = t0 + config.CAPTURE_BUDGET_MS / 1000.0
     status = "completed"
+    ts = efficacy.now_iso()
     surfaced_n = 0
     touched_n = 0
     conn = None
@@ -57,8 +118,7 @@ def run(args) -> None:
         conn = efficacy.connect(config.EFFICACY_DB_PATH)
         ro = connect_ro(config.DB_PATH)
         closed = _closed_turn(ro, session_id)
-        ts = efficacy.now_iso()
-        root = _current_root()
+        root, repo_id = _session_context(ro, session_id)
 
         cap = getattr(args, "_capture", None) or {}
 
@@ -67,7 +127,7 @@ def run(args) -> None:
             if time.monotonic() > deadline:
                 status = "timeout"
                 break
-            key = recall_key.file_key(path, current_root=root)
+            key = recall_key.file_key(path, current_root=root, repo_id=repo_id)
             conn.execute(
                 "INSERT OR IGNORE INTO surfaced(session_id,key,kind,cmd,first_ts,turn) "
                 "VALUES(?,?,?,?,?,?)",
@@ -100,7 +160,7 @@ def run(args) -> None:
                 if time.monotonic() > deadline:
                     status = "timeout"
                     break
-                key = recall_key.file_key(r["file_path"], current_root=root)
+                key = recall_key.file_key(r["file_path"], current_root=root, repo_id=repo_id)
                 s = conn.execute(
                     "SELECT turn FROM surfaced "
                     "WHERE session_id=? AND key=? AND kind='file'",
@@ -124,17 +184,21 @@ def run(args) -> None:
 
         # 4) Lazy retention (once/day).
         _maybe_prune(conn, session_id, ts)
-
-        ms = int((time.monotonic() - t0) * 1000)
-        conn.execute(
-            "INSERT INTO capture_stat(session_id,ts,status,surfaced_n,touched_n,ms) "
-            "VALUES(?,?,?,?,?,?)",
-            (session_id, ts, status, surfaced_n, touched_n, ms),
-        )
-        conn.commit()
     except Exception:
-        pass
+        status = "failed"
     finally:
+        try:
+            if conn is not None:
+                ms = int((time.monotonic() - t0) * 1000)
+                conn.execute(
+                    "INSERT INTO capture_stat(session_id,ts,status,surfaced_n,touched_n,ms) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (session_id, ts, status, surfaced_n, touched_n, ms),
+                )
+                _maybe_warn_degradation(conn, session_id, ts, status)
+                conn.commit()
+        except Exception:
+            pass
         try:
             if ro is not None:
                 ro.close()
@@ -145,6 +209,42 @@ def run(args) -> None:
                 conn.close()
         except Exception:
             pass
+
+
+def _maybe_warn_degradation(conn, session_id: str, ts: str, status: str) -> None:
+    if status not in _WARN_STATUSES:
+        return
+    rows = conn.execute(
+        "SELECT status FROM capture_stat WHERE session_id=? ORDER BY id DESC LIMIT ?",
+        (session_id, _DEGRADE_WINDOW_RUNS),
+    ).fetchall()
+    runs = len(rows)
+    if runs < _DEGRADE_MIN_RUNS:
+        return
+    degraded = sum(1 for r in rows if r["status"] in _WARN_STATUSES)
+    ratio = degraded / runs if runs else 0.0
+    if ratio < _DEGRADE_RATIO_WARN:
+        return
+
+    warn_key = f"__capture_warn__:{session_id}"
+    last_row = conn.execute(
+        "SELECT last_prune_ts FROM cursor WHERE session_id=?",
+        (warn_key,),
+    ).fetchone()
+    last_warn = _parse_iso(last_row["last_prune_ts"]) if last_row and last_row["last_prune_ts"] else None
+    now = _parse_iso(ts)
+    if last_warn and now and (now - last_warn).total_seconds() < _WARN_COOLDOWN_SEC:
+        return
+
+    _warn(
+        f"warning: capture degraded for {session_id[:8]} "
+        f"({degraded}/{runs} recent runs timeout/failed)"
+    )
+    conn.execute(
+        "INSERT INTO cursor(session_id,last_turn_seen,last_prune_ts) VALUES(?,-1,?) "
+        "ON CONFLICT(session_id) DO UPDATE SET last_prune_ts=excluded.last_prune_ts",
+        (warn_key, ts),
+    )
 
 
 def _maybe_prune(conn, session_id: str, ts: str) -> None:
