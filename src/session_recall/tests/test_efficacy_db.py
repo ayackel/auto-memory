@@ -229,3 +229,30 @@ def test_init_recovers_from_corrupt_db_non_destructively(tmp_path):
         assert "telemetry" in names
     finally:
         conn.close()
+
+
+def test_init_does_not_recover_on_transient_integrity_check_lock(tmp_path, monkeypatch):
+    db = tmp_path / "eff.db"
+    efficacy.init(str(db)).close()
+
+    called = {"recover": 0}
+
+    def fake_integrity(_conn, quick=True):
+        assert quick is True
+        return {"ok": False, "check": "quick_check", "detail": "database is locked"}
+
+    def fake_recover(_path=None):
+        called["recover"] += 1
+        return []
+
+    monkeypatch.setattr(efficacy, "check_integrity", fake_integrity)
+    monkeypatch.setattr(efficacy, "recover_corrupt_store", fake_recover)
+
+    try:
+        efficacy.init(str(db))
+        assert False, "expected init to fail on transient integrity-check lock"
+    except Exception as exc:
+        assert "integrity check failed: database is locked" in str(exc).lower()
+
+    assert called["recover"] == 0
+    assert list(tmp_path.glob("eff.db.corrupt-*")) == []

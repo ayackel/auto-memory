@@ -15,8 +15,19 @@ _CORRUPTION_MARKERS = (
     "database disk image is malformed",
     "file is not a database",
     "database corruption",
-    "malformed",
-    "integrity check failed",
+    "sqlite_corrupt",
+)
+_TRANSIENT_FAILURE_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database schema is locked",
+    "database is busy",
+    "busy",
+    "locked",
+    "resource temporarily unavailable",
+    "temporarily unavailable",
+    "disk i/o error",
+    "i/o error",
 )
 
 _SCHEMA_TABLES = (
@@ -105,6 +116,11 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 def _is_corruption_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(marker in msg for marker in _CORRUPTION_MARKERS)
+
+
+def _is_transient_failure(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSIENT_FAILURE_MARKERS)
 
 
 def check_integrity(conn: sqlite3.Connection, quick: bool = True) -> dict:
@@ -261,7 +277,7 @@ def init(db_path: str | None = None) -> sqlite3.Connection:
         except sqlite3.Error as exc:
             if conn is not None:
                 conn.close()
-            if recovered or not _is_corruption_error(exc):
+            if recovered or not _is_corruption_error(exc) or _is_transient_failure(exc):
                 raise
             recover_corrupt_store(target)
             recovered = True
