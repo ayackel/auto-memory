@@ -1,57 +1,78 @@
-"""Telemetry ring buffer for session-recall invocations."""
+"""Telemetry writer + reader — SQLite-backed (sidecar efficacy DB)."""
 import hashlib
-import json
-import time
-from pathlib import Path
 
-_TELEMETRY_PATH = None
+from ..db import efficacy
+
+_DB_PATH = None
+
+_OPTIONAL = ("tier", "query_hash", "session_id_prefix", "window_tier")
+
 
 def query_hash(q: str) -> str:
-    """8-char sha256 hash of whitespace-normalized, lowercased query.
-    Collision-tolerant, not reversible. Use for repetition detection without logging raw query."""
+    """8-char sha256 of whitespace-normalized, lowercased query. Not reversible."""
     normalized = " ".join(q.lower().split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:8]
 
-def init(path: str) -> None:
-    global _TELEMETRY_PATH
-    _TELEMETRY_PATH = path
 
-def record(cmd: str, duration_ms: int, busy_hits: int = 0,
-           attempts: int = 1, rows: int = 0, exit_code: int = 0,
-           schema_ok: bool = True, tier: int | None = None,
-           query_hash: str | None = None, session_id_prefix: str | None = None,
-           window_tier: str | None = None) -> None:
-    """Append entry to ring buffer. Silent fail on any error.
+def init(db_path) -> None:
+    global _DB_PATH
+    _DB_PATH = db_path
 
-    New optional fields (Phase 1):
-      tier: 0=meta, 1=scan, 2=search, 3=deep. None = pre-instrumentation legacy.
-      query_hash: 8-char sha256 prefix of normalized search query (search only).
-      session_id_prefix: 8-char prefix of session ID (show only).
-      window_tier: one of W1..W6 or "W?" — set by --days-from/--days-to (Phase 4).
-    """
-    if not _TELEMETRY_PATH:
-        return
+
+def record(cmd: str, duration_ms: int, busy_hits: int = 0, attempts: int = 1,
+         rows: int = 0, exit_code: int = 0, schema_ok: bool = True,
+         tier: int | None = None, query_hash: str | None = None,
+         session_id_prefix: str | None = None, window_tier: str | None = None,
+         session_id: str | None = None) -> None:
+    """Append a telemetry row. Silent fail — telemetry must never crash the CLI."""
+    if not _DB_PATH:
+       return
     try:
-        path = Path(_TELEMETRY_PATH)
-        entries = json.loads(path.read_text()).get("entries", []) if path.exists() else []
-        entry = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "cmd": cmd, "duration_ms": duration_ms, "busy_hits": busy_hits,
-            "attempts": attempts, "rows_returned": rows,
-            "exit_code": exit_code, "schema_ok": schema_ok,
-        }
-        # Only include non-None optional fields — keeps legacy schema clean
-        if tier is not None:
-            entry["tier"] = tier
-        if query_hash is not None:
-            entry["query_hash"] = query_hash
-        if session_id_prefix is not None:
-            entry["session_id_prefix"] = session_id_prefix
-        if window_tier is not None:
-            entry["window_tier"] = window_tier
-        entries.append(entry)
-        entries = entries[-500:]  # Ring buffer: 100 → 500
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"entries": entries}, indent=2))
+       conn = efficacy.connect(_DB_PATH)
+       try:
+           conn.execute(
+             "INSERT INTO telemetry (session_id, ts, cmd, duration_ms, busy_hits, "
+             "attempts, rows_returned, exit_code, schema_ok, tier, query_hash, "
+             "session_id_prefix, window_tier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             (session_id, efficacy.now_iso(), cmd, duration_ms, busy_hits, attempts,
+              rows, exit_code, 1 if schema_ok else 0, tier, query_hash,
+              session_id_prefix, window_tier),
+           )
+           conn.commit()
+       finally:
+           conn.close()
     except Exception:
-        pass  # Silent fail — telemetry must never crash the CLI
+       pass
+
+
+def load_entries(limit: int = 500) -> list[dict]:
+    """Return up to `limit` most-recent rows as JSON-shaped dicts (chronological).
+
+    Optional fields that are NULL are OMITTED, preserving the legacy JSON shape so
+    consumers using `'tier' not in entry` keep working unchanged.
+    """
+    if not _DB_PATH:
+       return []
+    try:
+       conn = efficacy.connect(_DB_PATH)
+       try:
+           rows = conn.execute(
+             "SELECT * FROM telemetry ORDER BY id DESC LIMIT ?", (limit,)
+           ).fetchall()
+       finally:
+           conn.close()
+    except Exception:
+       return []
+    out = []
+    for r in reversed(rows):  # chronological
+       d = {
+           "ts": r["ts"], "cmd": r["cmd"], "duration_ms": r["duration_ms"],
+           "busy_hits": r["busy_hits"], "attempts": r["attempts"],
+           "rows_returned": r["rows_returned"], "exit_code": r["exit_code"],
+           "schema_ok": bool(r["schema_ok"]),
+       }
+       for k in _OPTIONAL:
+           if r[k] is not None:
+             d[k] = r[k]
+       out.append(d)
+    return out
