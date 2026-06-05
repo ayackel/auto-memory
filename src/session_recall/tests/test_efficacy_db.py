@@ -8,6 +8,7 @@ def test_init_creates_all_tables(tmp_path):
     names = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert {"telemetry", "surfaced", "touched", "cursor", "capture_stat"} <= names
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == efficacy.SCHEMA_VERSION
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     conn.close()
 
@@ -38,4 +39,34 @@ def test_prune_deletes_old_rows(tmp_path):
     keys = {r[0] for r in conn.execute("SELECT key FROM surfaced").fetchall()}
     assert keys == {"k2"}
     assert deleted >= 1
+    conn.close()
+
+
+def test_init_upgrades_old_schema_and_sets_user_version(tmp_path):
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            ts TEXT NOT NULL,
+            cmd TEXT,
+            duration_ms INTEGER,
+            busy_hits INTEGER DEFAULT 0,
+            attempts INTEGER DEFAULT 1,
+            rows_returned INTEGER DEFAULT 0,
+            exit_code INTEGER DEFAULT 0,
+            schema_ok INTEGER DEFAULT 1
+        );
+        """
+    )
+    conn.execute("PRAGMA user_version = 0")
+    conn.commit()
+    conn.close()
+
+    conn = efficacy.init(db)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(telemetry)").fetchall()}
+    assert {"tier", "query_hash", "session_id_prefix", "window_tier"} <= cols
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == efficacy.SCHEMA_VERSION
     conn.close()

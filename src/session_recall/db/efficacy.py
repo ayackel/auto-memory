@@ -7,7 +7,9 @@ from pathlib import Path
 
 from ..config import EFFICACY_DB_PATH
 
-SCHEMA = """
+SCHEMA_VERSION = 1
+
+_SCHEMA_TABLES = """
 CREATE TABLE IF NOT EXISTS telemetry (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT,
@@ -54,6 +56,9 @@ CREATE TABLE IF NOT EXISTS capture_stat (
     touched_n INTEGER DEFAULT 0,
     ms INTEGER DEFAULT 0
 );
+"""
+
+_SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_surfaced_kind_ts ON surfaced(kind, first_ts);
 CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts);
 CREATE INDEX IF NOT EXISTS idx_telemetry_cmd ON telemetry(cmd, session_id_prefix);
@@ -78,7 +83,20 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Unsupported efficacy sidecar schema version: {current_version} > {SCHEMA_VERSION}"
+        )
+
+    conn.executescript(_SCHEMA_TABLES)
+    if current_version < 1:
+        _migrate_to_v1(conn)
+        current_version = 1
+
+    conn.executescript(_SCHEMA_INDEXES)
+    if current_version != SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
 
@@ -87,6 +105,21 @@ def init(db_path: str | None = None) -> sqlite3.Connection:
     conn = connect(db_path)
     ensure_schema(conn)
     return conn
+
+
+def _migrate_to_v1(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "telemetry", "tier INTEGER")
+    _add_column_if_missing(conn, "telemetry", "query_hash TEXT")
+    _add_column_if_missing(conn, "telemetry", "session_id_prefix TEXT")
+    _add_column_if_missing(conn, "telemetry", "window_tier TEXT")
+    conn.execute("PRAGMA user_version = 1")
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column_ddl: str) -> None:
+    column_name = column_ddl.split()[0]
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column_name not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_ddl}")
 
 
 def prune(conn: sqlite3.Connection, retention_days: int, now: str | None = None) -> int:
