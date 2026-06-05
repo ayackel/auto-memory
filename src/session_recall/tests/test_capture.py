@@ -115,6 +115,25 @@ def test_capture_stat_recorded(env):
     conn.close()
 
 
+def test_capture_payload_explicit_no_side_channel_required(env):
+    _make_copilot_store(env.copilot, "sess-1", turns=[(0, "a")], files=[])
+    args = types.SimpleNamespace(command="files")
+    capture.run(args, capture_payload={"files": ["/wt/foo.py"]})
+    conn = efficacy.connect(env.eff)
+    row = conn.execute("SELECT surfaced_n FROM capture_stat").fetchone()
+    assert row["surfaced_n"] == 1
+    conn.close()
+
+
+def test_surfaced_n_ignores_duplicate_insert_or_ignore(env):
+    _make_copilot_store(env.copilot, "sess-1", turns=[(0, "a")], files=[])
+    capture.run(_args("files", {"files": ["/wt/foo.py", "/wt/foo.py"], "sessions": ["s1", "s1"]}))
+    conn = efficacy.connect(env.eff)
+    row = conn.execute("SELECT surfaced_n FROM capture_stat").fetchone()
+    assert row["surfaced_n"] == 2
+    conn.close()
+
+
 def test_session_context_supplies_root_and_repo_id(env, tmp_path, monkeypatch):
     root = tmp_path / "repo"
     nested = root / "nested"

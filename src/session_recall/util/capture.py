@@ -88,6 +88,15 @@ def _warn(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _capture_payload(args, capture_payload: dict | None = None) -> dict:
+    if capture_payload is not None:
+        return capture_payload
+    payload = getattr(args, "capture", None)
+    if payload is not None:
+        return payload
+    return getattr(args, "_capture", None) or {}
+
+
 def _closed_turn(ro, session_id: str) -> int:
     row = ro.execute(
         "SELECT MAX(turn_index) AS m FROM turns "
@@ -98,7 +107,7 @@ def _closed_turn(ro, session_id: str) -> int:
     return m if m is not None else -1
 
 
-def run(args) -> None:
+def run(args, capture_payload: dict | None = None) -> None:
     """Entry point. Never raises; bails silently on budget/errors."""
     if getattr(config, "NO_CAPTURE", False):
         return
@@ -120,7 +129,7 @@ def run(args) -> None:
         closed = _closed_turn(ro, session_id)
         root, repo_id = _session_context(ro, session_id)
 
-        cap = getattr(args, "_capture", None) or {}
+        cap = _capture_payload(args, capture_payload)
 
         # 1) Record surfaced artifacts (deduped; earliest kept by INSERT OR IGNORE).
         for path in cap.get("files", []) or []:
@@ -128,22 +137,24 @@ def run(args) -> None:
                 status = "timeout"
                 break
             key = recall_key.file_key(path, current_root=root, repo_id=repo_id)
-            conn.execute(
+            inserted = conn.execute(
                 "INSERT OR IGNORE INTO surfaced(session_id,key,kind,cmd,first_ts,turn) "
                 "VALUES(?,?,?,?,?,?)",
                 (session_id, key, "file", getattr(args, "command", None), ts, closed),
             )
-            surfaced_n += 1
+            if inserted.rowcount > 0:
+                surfaced_n += 1
         for sid in cap.get("sessions", []) or []:
             key = recall_key.session_key(sid)
             if not key:
                 continue
-            conn.execute(
+            inserted = conn.execute(
                 "INSERT OR IGNORE INTO surfaced(session_id,key,kind,cmd,first_ts,turn) "
                 "VALUES(?,?,?,?,?,?)",
                 (session_id, key, "session", getattr(args, "command", None), ts, closed),
             )
-            surfaced_n += 1
+            if inserted.rowcount > 0:
+                surfaced_n += 1
 
         # 2) Snapshot newly-used files since the watermark, up to the closed frontier.
         if status != "timeout":
@@ -167,12 +178,13 @@ def run(args) -> None:
                     (session_id, key),
                 ).fetchone()
                 if s is not None and s["turn"] < r["turn_index"]:
-                    conn.execute(
+                    inserted = conn.execute(
                         "INSERT OR IGNORE INTO touched(session_id,key,ts,turn) "
                         "VALUES(?,?,?,?)",
                         (session_id, key, ts, r["turn_index"]),
                     )
-                    touched_n += 1
+                    if inserted.rowcount > 0:
+                        touched_n += 1
 
             # 3) Advance the watermark — forward only.
             conn.execute(
