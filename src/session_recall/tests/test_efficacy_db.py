@@ -256,3 +256,31 @@ def test_init_does_not_recover_on_transient_integrity_check_lock(tmp_path, monke
 
     assert called["recover"] == 0
     assert list(tmp_path.glob("eff.db.corrupt-*")) == []
+
+
+def test_init_recovers_on_non_transient_integrity_check_failure(tmp_path, monkeypatch):
+    db = tmp_path / "eff.db"
+    efficacy.init(str(db)).close()
+
+    called = {"recover": 0}
+    integrity_calls = {"count": 0}
+
+    def fake_integrity(_conn, quick=True):
+        assert quick is True
+        integrity_calls["count"] += 1
+        if integrity_calls["count"] == 1:
+            return {"ok": False, "check": "quick_check", "detail": "row 12 missing from index idx_telemetry_ts"}
+        return {"ok": True, "check": "quick_check", "detail": "ok"}
+
+    def fake_recover(_path=None):
+        called["recover"] += 1
+        return []
+
+    monkeypatch.setattr(efficacy, "check_integrity", fake_integrity)
+    monkeypatch.setattr(efficacy, "recover_corrupt_store", fake_recover)
+
+    conn = efficacy.init(str(db))
+    conn.close()
+
+    assert called["recover"] == 1
+    assert integrity_calls["count"] == 2

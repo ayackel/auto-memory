@@ -123,6 +123,10 @@ def _is_transient_failure(exc: BaseException) -> bool:
     return any(marker in msg for marker in _TRANSIENT_FAILURE_MARKERS)
 
 
+def _is_integrity_check_failure(exc: BaseException) -> bool:
+    return "integrity check failed:" in str(exc).lower()
+
+
 def check_integrity(conn: sqlite3.Connection, quick: bool = True) -> dict:
     pragma = "PRAGMA quick_check(1)" if quick else "PRAGMA integrity_check(1)"
     check_name = "quick_check" if quick else "integrity_check"
@@ -277,7 +281,9 @@ def init(db_path: str | None = None) -> sqlite3.Connection:
         except sqlite3.Error as exc:
             if conn is not None:
                 conn.close()
-            if recovered or not _is_corruption_error(exc) or _is_transient_failure(exc):
+            if recovered or _is_transient_failure(exc):
+                raise
+            if not (_is_corruption_error(exc) or _is_integrity_check_failure(exc)):
                 raise
             recover_corrupt_store(target)
             recovered = True
