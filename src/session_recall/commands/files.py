@@ -39,6 +39,7 @@ def run(args) -> int:
         for r in files:
             r.pop("provider", None)
 
+    args._capture = {"files": [f["file_path"] for f in files if f.get("file_path")]}
     output(
         {"repo": repo or "all", "count": len(files), "files": files},
         json_mode=getattr(args, "json", False),

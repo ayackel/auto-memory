@@ -100,6 +100,7 @@ def run(args) -> int:
         for r in _all_records:
             r.pop("provider", None)
 
+    args._capture = {"sessions": [s.get("id_full") or s.get("id") for s in sessions if (s.get("id_full") or s.get("id"))]}
     data = {
         "repo": scope,
         "count": len(sessions),
