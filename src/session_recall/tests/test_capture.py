@@ -174,3 +174,16 @@ def test_degraded_capture_warns_with_rate_limit(env, monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert err.count("warning: capture degraded") == 1
+
+
+def test_capture_does_not_run_prune_inline(env, monkeypatch):
+    _make_copilot_store(env.copilot, "sess-1", turns=[(0, "a")], files=[])
+    calls = {"n": 0}
+
+    def fake_prune(conn, retention_days, now=None):
+        calls["n"] += 1
+        return 0
+
+    monkeypatch.setattr(capture.efficacy, "prune", fake_prune)
+    capture.run(_args("files", {"files": ["/wt/foo.py"]}))
+    assert calls["n"] == 0

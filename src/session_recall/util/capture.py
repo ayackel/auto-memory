@@ -194,8 +194,6 @@ def run(args, capture_payload: dict | None = None) -> None:
                 (session_id, closed),
             )
 
-        # 4) Lazy retention (once/day).
-        _maybe_prune(conn, session_id, ts)
     except Exception:
         status = "failed"
     finally:
@@ -258,20 +256,3 @@ def _maybe_warn_degradation(conn, session_id: str, ts: str, status: str) -> None
         (warn_key, ts),
     )
 
-
-def _maybe_prune(conn, session_id: str, ts: str) -> None:
-    try:
-        row = conn.execute(
-            "SELECT last_prune_ts FROM cursor WHERE session_id=?", (session_id,)
-        ).fetchone()
-        last = row["last_prune_ts"] if row else None
-        if last and last[:10] == ts[:10]:
-            return  # already pruned today (compare YYYY-MM-DD)
-        efficacy.prune(conn, config.RETENTION_DAYS, now=ts)
-        conn.execute(
-            "INSERT INTO cursor(session_id,last_turn_seen,last_prune_ts) VALUES(?,-1,?) "
-            "ON CONFLICT(session_id) DO UPDATE SET last_prune_ts=excluded.last_prune_ts",
-            (session_id, ts),
-        )
-    except Exception:
-        pass
