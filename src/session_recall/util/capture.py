@@ -8,12 +8,13 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .. import config
 from ..db.connect import connect_ro
 from ..db import efficacy
 from . import recall_key
+from .timestamps import parse_timestamp
 
 _ROOT_CACHE: dict[str, str | None] = {}
 _SESSION_CTX_CACHE: dict[str, tuple[str, str | None, str | None]] = {}
@@ -76,12 +77,7 @@ def _session_context(ro, session_id: str) -> tuple[str | None, str | None]:
 
 
 def _parse_iso(ts: str) -> datetime | None:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-            tzinfo=timezone.utc
-        )
-    except Exception:
-        return None
+    return parse_timestamp(ts)
 
 
 def _warn(msg: str) -> None:

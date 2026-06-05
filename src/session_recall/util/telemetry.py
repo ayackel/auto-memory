@@ -2,6 +2,7 @@
 import hashlib
 
 from ..db import efficacy
+from .timestamps import normalize_timestamp
 
 _DB_PATH = None
 
@@ -73,8 +74,9 @@ def load_entries(limit: int = 500, db_path: str | None = None) -> list[dict]:
        return []
     out = []
     for r in reversed(rows):  # chronological
+       normalized_ts = normalize_timestamp(r["ts"])
        d = {
-           "ts": r["ts"], "cmd": r["cmd"], "duration_ms": r["duration_ms"],
+           "ts": normalized_ts or r["ts"], "cmd": r["cmd"], "duration_ms": r["duration_ms"],
            "busy_hits": r["busy_hits"], "attempts": r["attempts"],
            "rows_returned": r["rows_returned"], "exit_code": r["exit_code"],
            "schema_ok": bool(r["schema_ok"]),

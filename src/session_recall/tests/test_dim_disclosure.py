@@ -87,3 +87,13 @@ def test_scoring_active_gate(monkeypatch):
     r = dim_disclosure.check()
     assert r["score"] is None
     assert r["zone"] == "CALIBRATING"
+
+
+def test_t3_to_t3_long_gap_mixed_precision_is_suspicious():
+    entries = [
+        {"cmd": "show", "tier": 3, "ts": "2026-01-01T00:00:00Z"},
+        {"cmd": "show", "tier": 3, "ts": "2026-01-01T00:10:00.100Z"},
+    ]
+    t = dim_disclosure._classify_transitions(entries)
+    assert t["suspicious"] >= 1
+    assert t["neutral"] == 0

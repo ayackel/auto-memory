@@ -72,3 +72,31 @@ def test_load_entries_db_path_does_not_mutate_global(tmp_path):
     assert telemetry.load_entries(limit=1)[0]["cmd"] == "list"
     assert telemetry.load_entries(limit=1, db_path=db_b)[0]["cmd"] == "search"
     telemetry.init(None)
+
+
+def test_load_entries_normalizes_mixed_timestamp_precision(tmp_db):
+    conn = efficacy.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO telemetry(session_id, ts, cmd, duration_ms, busy_hits, attempts, "
+        "rows_returned, exit_code, schema_ok) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("s1", "2026-01-01T00:00:00Z", "list", 1, 0, 1, 0, 0, 1),
+    )
+    conn.execute(
+        "INSERT INTO telemetry(session_id, ts, cmd, duration_ms, busy_hits, attempts, "
+        "rows_returned, exit_code, schema_ok) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("s2", "2026-01-01T00:00:00.123Z", "search", 1, 0, 1, 0, 0, 1),
+    )
+    conn.execute(
+        "INSERT INTO telemetry(session_id, ts, cmd, duration_ms, busy_hits, attempts, "
+        "rows_returned, exit_code, schema_ok) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("s3", "2026-01-01T00:00:00.123456Z", "show", 1, 0, 1, 0, 0, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    rows = telemetry.load_entries(limit=3, db_path=tmp_db)
+    assert [r["ts"] for r in rows] == [
+        "2026-01-01T00:00:00.000000Z",
+        "2026-01-01T00:00:00.123000Z",
+        "2026-01-01T00:00:00.123456Z",
+    ]

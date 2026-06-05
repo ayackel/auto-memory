@@ -8,6 +8,7 @@ from __future__ import annotations
 import statistics
 from datetime import datetime, timedelta, timezone
 from ..util import telemetry
+from ..util.timestamps import parse_timestamp
 
 # ---- Stage-2 gate. Operator flips this to True after hand-editing thresholds. ----
 SCORING_ACTIVE = False
@@ -32,10 +33,7 @@ def _load_entries() -> list[dict]:
 
 
 def _parse_ts(ts: str) -> datetime | None:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
-    except (ValueError, TypeError):
-        return None
+    return parse_timestamp(ts)
 
 
 def _classify_transitions(scored: list[dict]) -> dict:
@@ -106,7 +104,7 @@ def check() -> dict:
 
     # Guard 2: insufficient sample
     first_ts = next((_parse_ts(e["ts"]) for e in entries if _parse_ts(e.get("ts", ""))), None)
-    age_days = ((datetime.now(timezone.utc).replace(tzinfo=None) - first_ts).days if first_ts else 0)
+    age_days = ((datetime.now(timezone.utc) - first_ts).days if first_ts else 0)
     if scored_n < MIN_SAMPLE_SIZE and age_days < MIN_SAMPLE_DAYS:
         return {**base, "score": None, "zone": "CALIBRATING",
                 "detail": f"{scored_n}/{MIN_SAMPLE_SIZE} non-meta entries, {age_days}d since first",

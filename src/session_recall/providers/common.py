@@ -6,6 +6,8 @@ import datetime as _dt
 import json
 from pathlib import Path
 
+from ..util.timestamps import parse_timestamp
+
 
 def utc_iso_from_ts(ts: float) -> str:
     """Convert POSIX timestamp to UTC ISO8601."""
@@ -18,12 +20,9 @@ def is_within_days(iso_ts: str | None, days: int | None) -> bool:
         return True
     if not iso_ts:
         return False
-    try:
-        parsed = _dt.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
-    except ValueError:
+    parsed = parse_timestamp(iso_ts)
+    if parsed is None:
         return False
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
     cutoff = _dt.datetime.now(tz=_dt.timezone.utc) - _dt.timedelta(days=days)
     return parsed >= cutoff
 
