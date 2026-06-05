@@ -9,7 +9,7 @@ from ..db import efficacy
 from ..util.format_output import output
 
 _ESCALATE_CMDS = ("show", "export", "diff")
-_MIN_SURFACES = 1
+_MIN_SURFACES = 20
 
 
 def _cutoff(days: int) -> str:
@@ -45,7 +45,7 @@ def _counts(conn, cutoff, args):
     sess_hits = conn.execute(
         f"SELECT COUNT(*) FROM surfaced s WHERE s.kind='session' AND {where} "
         f"AND EXISTS(SELECT 1 FROM telemetry t WHERE t.cmd IN ({placeholders}) "
-        "AND t.session_id_prefix=s.key AND t.ts > s.first_ts)",
+        "AND t.session_id=s.session_id AND t.session_id_prefix=s.key AND t.ts > s.first_ts)",
         base + list(_ESCALATE_CMDS),
     ).fetchone()[0]
     return file_surfaces, file_hits, sess_surfaces, sess_hits
@@ -56,8 +56,10 @@ def _rate(hits, surfaces):
 
 
 def _macro(conn, cutoff, args):
+    fclauses, fparams = _filters(args)
+    where = " AND ".join(["s.first_ts >= ?"] + fclauses)
     rows = conn.execute(
-        "SELECT DISTINCT session_id FROM surfaced WHERE first_ts >= ?", (cutoff,)
+        f"SELECT DISTINCT s.session_id FROM surfaced s WHERE {where}", [cutoff] + fparams
     ).fetchall()
     table = []
     for r in rows:

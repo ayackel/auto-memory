@@ -18,8 +18,17 @@ def _seed(db):
     conn.execute("INSERT INTO surfaced VALUES('sess-1','aaaa1111','session','list',?,0)", (ts,))
     conn.execute("INSERT INTO surfaced VALUES('sess-1','bbbb2222','session','list',?,0)", (ts,))
     conn.execute("INSERT INTO telemetry(session_id,ts,cmd,session_id_prefix) "
-                 "VALUES('sess-9',?, 'show','aaaa1111')", (later,))
+                 "VALUES('sess-1',?, 'show','aaaa1111')", (later,))
     conn.execute("INSERT INTO capture_stat(session_id,ts,status) VALUES('sess-1',?, 'completed')", (ts,))
+    conn.commit()
+    conn.close()
+
+
+def _seed_file_surfaces(db, n):
+    conn = efficacy.init(db)
+    ts = "2099-01-01T00:00:00.000000Z"
+    for i in range(n):
+        conn.execute("INSERT INTO surfaced VALUES('sess-1',?, 'file','files',?,0)", (f"f{i}", ts))
     conn.commit()
     conn.close()
 
@@ -34,7 +43,8 @@ def _run(db, **kw):
     return rc, json.loads(buf.getvalue())
 
 
-def test_rates_and_counts(tmp_path):
+def test_rates_and_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
     db = str(tmp_path / "eff.db")
     _seed(db)
     rc, out = _run(db)
@@ -54,7 +64,27 @@ def test_insufficient_data_guard(tmp_path):
     assert out["unique_surfaces"] == 0
 
 
-def test_strict_ordering_excludes_pre_surface_escalation(tmp_path):
+def test_sample_size_guard_boundary_19_insufficient(tmp_path):
+    db = str(tmp_path / "eff.db")
+    _seed_file_surfaces(db, 19)
+    rc, out = _run(db)
+    assert rc == 0
+    assert out["status"] == "insufficient_data"
+    assert out["unique_surfaces"] == 19
+    assert out["needed"] == 20
+
+
+def test_sample_size_guard_boundary_20_ok(tmp_path):
+    db = str(tmp_path / "eff.db")
+    _seed_file_surfaces(db, 20)
+    rc, out = _run(db)
+    assert rc == 0
+    assert out["status"] == "ok"
+    assert out["blended"]["surfaces"] == 20
+
+
+def test_strict_ordering_excludes_pre_surface_escalation(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
     db = str(tmp_path / "eff.db")
     conn = efficacy.init(db)
     conn.execute("INSERT INTO surfaced VALUES('s','cccc3333','session','list','2099-01-01T00:00:05.000000Z',0)")
@@ -63,3 +93,37 @@ def test_strict_ordering_excludes_pre_surface_escalation(tmp_path):
     conn.commit(); conn.close()
     rc, out = _run(db)
     assert out["session_recall"]["hits"] == 0
+
+
+def test_escalation_attribution_does_not_cross_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','aaaa1111','session','list','2099-01-01T00:00:00.000000Z',0)")
+    conn.execute("INSERT INTO telemetry(session_id,ts,cmd,session_id_prefix) "
+                 "VALUES('sess-2','2099-01-01T00:00:05.000000Z','show','aaaa1111')")
+    conn.commit()
+    conn.close()
+    rc, out = _run(db, session="sess-1")
+    assert rc == 0
+    assert out["session_recall"]["hits"] == 0
+    assert out["session_recall"]["surfaces"] == 1
+
+
+def test_per_session_worst_honors_session_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(eff_cmd, "_MIN_SURFACES", 1)
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.init(db)
+    conn.execute("INSERT INTO surfaced VALUES('sess-1','f1','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.execute("INSERT INTO touched VALUES('sess-1','f1','2099-01-01T00:00:05.000000Z',1)")
+    conn.execute("INSERT INTO surfaced VALUES('sess-2','f2','file','files','2099-01-01T00:00:00.000000Z',0)")
+    conn.commit()
+    conn.close()
+    rc, out = _run(db, session="sess-1")
+    assert rc == 0
+    assert out["per_session_worst"] == [{
+        "session_id": "sess-1",
+        "surfaces": 1,
+        "hits": 1,
+        "rate": 1.0,
+    }]
