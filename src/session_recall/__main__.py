@@ -227,6 +227,11 @@ def main() -> None:
             f"'{args.command}' not yet implemented. Coming in Phase 2.", file=sys.stderr
         )
 
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+
     duration_ms = int((time.monotonic() - t0) * 1000)
     tier = TIER_MAP.get(args.command)  # None if command unknown
     qhash = None
@@ -247,10 +252,6 @@ def main() -> None:
         window_tier=wtier,
         session_id=AGENT_SESSION_ID,
     )
-    try:
-        sys.stdout.flush()
-    except Exception:
-        pass
     capture.run(args)
     sys.exit(exit_code)
 

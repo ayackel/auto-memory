@@ -126,10 +126,22 @@ def run(args, capture_payload: dict | None = None) -> None:
     try:
         conn = efficacy.connect(config.EFFICACY_DB_PATH)
         ro = connect_ro(config.DB_PATH)
+        if time.monotonic() > deadline:
+            status = "timeout"
+            return
         closed = _closed_turn(ro, session_id)
+        if time.monotonic() > deadline:
+            status = "timeout"
+            return
         root, repo_id = _session_context(ro, session_id)
+        if time.monotonic() > deadline:
+            status = "timeout"
+            return
 
         cap = _capture_payload(args, capture_payload)
+        if time.monotonic() > deadline:
+            status = "timeout"
+            return
 
         # 1) Record surfaced artifacts (deduped; earliest kept by INSERT OR IGNORE).
         for path in cap.get("files", []) or []:
@@ -144,24 +156,34 @@ def run(args, capture_payload: dict | None = None) -> None:
             )
             if inserted.rowcount > 0:
                 surfaced_n += 1
-        for sid in cap.get("sessions", []) or []:
-            key = recall_key.session_key(sid)
-            if not key:
-                continue
-            inserted = conn.execute(
-                "INSERT OR IGNORE INTO surfaced(session_id,key,kind,cmd,first_ts,turn) "
-                "VALUES(?,?,?,?,?,?)",
-                (session_id, key, "session", getattr(args, "command", None), ts, closed),
-            )
-            if inserted.rowcount > 0:
-                surfaced_n += 1
+        if status != "timeout":
+            for sid in cap.get("sessions", []) or []:
+                if time.monotonic() > deadline:
+                    status = "timeout"
+                    break
+                key = recall_key.session_key(sid)
+                if not key:
+                    continue
+                inserted = conn.execute(
+                    "INSERT OR IGNORE INTO surfaced(session_id,key,kind,cmd,first_ts,turn) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (session_id, key, "session", getattr(args, "command", None), ts, closed),
+                )
+                if inserted.rowcount > 0:
+                    surfaced_n += 1
 
         # 2) Snapshot newly-used files since the watermark, up to the closed frontier.
         if status != "timeout":
+            if time.monotonic() > deadline:
+                status = "timeout"
+                return
             cur = conn.execute(
                 "SELECT last_turn_seen FROM cursor WHERE session_id=?", (session_id,)
             ).fetchone()
             last_seen = cur["last_turn_seen"] if cur else -1
+            if time.monotonic() > deadline:
+                status = "timeout"
+                return
             used = ro.execute(
                 "SELECT file_path, turn_index FROM session_files "
                 "WHERE session_id=? AND turn_index>? AND turn_index<=?",
@@ -255,4 +277,3 @@ def _maybe_warn_degradation(conn, session_id: str, ts: str, status: str) -> None
         "ON CONFLICT(session_id) DO UPDATE SET last_prune_ts=excluded.last_prune_ts",
         (warn_key, ts),
     )
-
