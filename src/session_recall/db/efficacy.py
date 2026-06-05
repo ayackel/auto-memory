@@ -9,7 +9,8 @@ from ..config import EFFICACY_DB_PATH
 
 SCHEMA_VERSION = 1
 
-_SCHEMA_TABLES = """
+_SCHEMA_TABLES = (
+    """
 CREATE TABLE IF NOT EXISTS telemetry (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT,
@@ -25,7 +26,9 @@ CREATE TABLE IF NOT EXISTS telemetry (
     query_hash TEXT,
     session_id_prefix TEXT,
     window_tier TEXT
-);
+)
+""",
+    """
 CREATE TABLE IF NOT EXISTS surfaced (
     session_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -34,19 +37,25 @@ CREATE TABLE IF NOT EXISTS surfaced (
     first_ts TEXT NOT NULL,
     turn INTEGER NOT NULL,
     PRIMARY KEY (session_id, key, kind)
-);
+)
+""",
+    """
 CREATE TABLE IF NOT EXISTS touched (
     session_id TEXT NOT NULL,
     key TEXT NOT NULL,
     ts TEXT NOT NULL,
     turn INTEGER NOT NULL,
     PRIMARY KEY (session_id, key)
-);
+)
+""",
+    """
 CREATE TABLE IF NOT EXISTS cursor (
     session_id TEXT PRIMARY KEY,
     last_turn_seen INTEGER NOT NULL DEFAULT -1,
     last_prune_ts TEXT
-);
+)
+""",
+    """
 CREATE TABLE IF NOT EXISTS capture_stat (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT,
@@ -55,14 +64,15 @@ CREATE TABLE IF NOT EXISTS capture_stat (
     surfaced_n INTEGER DEFAULT 0,
     touched_n INTEGER DEFAULT 0,
     ms INTEGER DEFAULT 0
-);
-"""
+)
+""",
+)
 
-_SCHEMA_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_surfaced_kind_ts ON surfaced(kind, first_ts);
-CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts);
-CREATE INDEX IF NOT EXISTS idx_telemetry_cmd ON telemetry(cmd, session_id_prefix);
-"""
+_SCHEMA_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_surfaced_kind_ts ON surfaced(kind, first_ts)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_cmd ON telemetry(cmd, session_id_prefix)",
+)
 
 
 def now_iso() -> str:
@@ -83,21 +93,31 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if current_version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Unsupported efficacy sidecar schema version: {current_version} > {SCHEMA_VERSION}"
-        )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current_version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Unsupported efficacy sidecar schema version: {current_version} > {SCHEMA_VERSION}"
+            )
+        should_bump_version = current_version != SCHEMA_VERSION
 
-    conn.executescript(_SCHEMA_TABLES)
-    if current_version < 1:
-        _migrate_to_v1(conn)
-        current_version = 1
+        for statement in _SCHEMA_TABLES:
+            conn.execute(statement)
 
-    conn.executescript(_SCHEMA_INDEXES)
-    if current_version != SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    conn.commit()
+        if current_version < 1:
+            _migrate_to_v1(conn)
+            current_version = 1
+
+        for statement in _SCHEMA_INDEXES:
+            conn.execute(statement)
+
+        if should_bump_version:
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def init(db_path: str | None = None) -> sqlite3.Connection:
@@ -112,14 +132,20 @@ def _migrate_to_v1(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "telemetry", "query_hash TEXT")
     _add_column_if_missing(conn, "telemetry", "session_id_prefix TEXT")
     _add_column_if_missing(conn, "telemetry", "window_tier TEXT")
-    conn.execute("PRAGMA user_version = 1")
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column_ddl: str) -> None:
     column_name = column_ddl.split()[0]
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column_name not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_ddl}")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column_name not in cols:
+                raise
 
 
 def prune(conn: sqlite3.Connection, retention_days: int, now: str | None = None) -> int:

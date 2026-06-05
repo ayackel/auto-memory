@@ -1,4 +1,6 @@
 # src/session_recall/tests/test_efficacy_db.py
+import threading
+
 from session_recall.db import efficacy
 
 
@@ -70,3 +72,55 @@ def test_init_upgrades_old_schema_and_sets_user_version(tmp_path):
     assert {"tier", "query_hash", "session_id_prefix", "window_tier"} <= cols
     assert conn.execute("PRAGMA user_version").fetchone()[0] == efficacy.SCHEMA_VERSION
     conn.close()
+
+
+def test_init_concurrent_upgrade_from_v0_schema(tmp_path):
+    db = str(tmp_path / "eff.db")
+    conn = efficacy.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            ts TEXT NOT NULL,
+            cmd TEXT,
+            duration_ms INTEGER,
+            busy_hits INTEGER DEFAULT 0,
+            attempts INTEGER DEFAULT 1,
+            rows_returned INTEGER DEFAULT 0,
+            exit_code INTEGER DEFAULT 0,
+            schema_ok INTEGER DEFAULT 1
+        );
+        """
+    )
+    conn.execute("PRAGMA user_version = 0")
+    conn.commit()
+    conn.close()
+
+    threads = []
+    errors = []
+    started = threading.Barrier(8)
+
+    def worker() -> None:
+        conn = None
+        try:
+            started.wait()
+            conn = efficacy.init(db)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(telemetry)").fetchall()}
+            assert {"tier", "query_hash", "session_id_prefix", "window_tier"} <= cols
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == efficacy.SCHEMA_VERSION
+        except Exception as exc:  # pragma: no cover - asserted by test
+            errors.append(exc)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    for _ in range(8):
+        thread = threading.Thread(target=worker)
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+    assert not errors
